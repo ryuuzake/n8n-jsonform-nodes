@@ -135,6 +135,21 @@ describe('JsonForm webhook', () => {
     expect(res.body).toContain('"completionMessage":"Custom thanks!"');
   });
 
+  it('GET flows a configured Accent Color into the config blob', async () => {
+    const { res } = await setup({
+      method: 'GET',
+      parameters: { accentColor: '#7c3aed' },
+    });
+
+    expect(res.body).toContain('"accentColor":"#7c3aed"');
+  });
+
+  it('GET omits Accent Color from the config blob when unset so the stock theme is served', async () => {
+    const { res } = await setup({ method: 'GET' });
+
+    expect(res.body).not.toContain('"accentColor"');
+  });
+
   describe('valid POST', () => {
     const validBody = {
       name: 'Ada Lovelace',
