@@ -8,6 +8,8 @@ import type { JsonSchema, UISchemaElement } from '@jsonforms/core';
 export interface PageConfig {
   schema: JsonSchema;
   uiSchema: UISchemaElement;
+  /** Shown on the success card after a submission was received. */
+  completionMessage?: string;
 }
 
 const CONFIG_ELEMENT_ID = 'jsonform-config';

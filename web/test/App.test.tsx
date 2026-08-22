@@ -72,4 +72,84 @@ describe('served form page', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  describe('submission loop', () => {
+    async function fillValidForm(user: ReturnType<typeof userEvent.setup>) {
+      await user.type(screen.getAllByLabelText(/full name/i)[0], 'Ada Lovelace');
+      await user.type(screen.getAllByLabelText(/email/i)[0], 'ada@example.com');
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /submit/i })).toBeEnabled(),
+      );
+    }
+
+    function mockFetchOnce(response: { ok: boolean; status: number; body?: object }) {
+      return vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(response.body ?? {}), {
+          status: response.status,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    }
+
+    it('posts the entered values as JSON to the current URL and swaps to a success card on 2xx', async () => {
+      const fetchSpy = mockFetchOnce({ ok: true, status: 200 });
+      const user = userEvent.setup();
+      mountAppWithConfig({ ...fixture, completionMessage: 'Thanks for your submission!' });
+
+      await fillValidForm(user);
+      await user.click(screen.getByRole('button', { name: /submit/i }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText('Thanks for your submission!'),
+        ).toBeInTheDocument(),
+      );
+      expect(screen.queryByRole('button', { name: /submit/i })).not.toBeInTheDocument();
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(String(url)).toContain('http://');
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ 'Content-Type': 'application/json' });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+      });
+    });
+
+    it('falls back to the stock completion message when the configuration omits one', async () => {
+      mockFetchOnce({ ok: true, status: 200 });
+      const user = userEvent.setup();
+      mountAppWithConfig(fixture);
+
+      await fillValidForm(user);
+      await user.click(screen.getByRole('button', { name: /submit/i }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText('Thank you! Your submission has been received.'),
+        ).toBeInTheDocument(),
+      );
+    });
+
+    it('shows an inline error alert and preserves entered values on failed submit', async () => {
+      mockFetchOnce({
+        ok: false,
+        status: 500,
+        body: { error: 'Workflow execution failed.' },
+      });
+      const user = userEvent.setup();
+      mountAppWithConfig(fixture);
+
+      await fillValidForm(user);
+      await user.click(screen.getByRole('button', { name: /submit/i }));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Workflow execution failed.');
+
+      // Entered values survive for retry, and the form can be submitted again.
+      expect(screen.getAllByLabelText(/full name/i)[0]).toHaveValue('Ada Lovelace');
+      expect(screen.getByRole('button', { name: /submit/i })).toBeEnabled();
+    });
+  });
 });

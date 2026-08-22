@@ -1,18 +1,26 @@
 import type {
+  IDataObject,
+  INodeExecutionData,
   INodeType,
   INodeTypeDescription,
   IWebhookFunctions,
   IWebhookResponseData,
 } from 'n8n-workflow';
 
+import { shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
+import type { Submission } from '../../src/form-definition';
+
 import { buildFormPageResponse, loadFormTemplate } from './formPage';
-import { sampleFormConfig } from './sampleForm';
+import { sampleForm, sampleFormConfig } from './sampleForm';
+
+export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
 
 /**
- * Serve the JSON Form page on webhook GET.
+ * Serve the JSON Form page on webhook GET and receive its submissions on POST.
  *
- * POST submissions are intentionally rejected until the submission loop slice
- * (validate payload, emit trigger item, Completion Message) is implemented.
+ * POST is validated server-side with the same Form Definition seam that
+ * compiled the served page (defense in depth), shaped into one flat trigger
+ * item, and emitted for n8n core to answer per the selected Response Mode.
  */
 export async function handleJsonFormWebhook(
   context: IWebhookFunctions,
@@ -23,16 +31,42 @@ export async function handleJsonFormWebhook(
   const method = req.method ?? 'GET';
 
   if (method === 'GET') {
-    const page = buildFormPageResponse(sampleFormConfig, loadTemplate);
+    const completionMessage = context.getNodeParameter(
+      'completionMessage',
+      DEFAULT_COMPLETION_MESSAGE,
+    ) as string;
+    const page = buildFormPageResponse(
+      { ...sampleFormConfig, completionMessage },
+      loadTemplate,
+    );
     res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
     res.end(page.body);
     return { noWebhookResponse: true };
   }
 
   if (method === 'POST') {
-    res.writeHead(501, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Submissions are not implemented yet.' }));
-    return { noWebhookResponse: true };
+    let submission: Submission;
+    try {
+      submission = shapeSubmission(sampleForm, context.getBodyData());
+    } catch (error) {
+      if (!(error instanceof SubmissionShapeError)) throw error;
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message, issues: error.issues }));
+      return { noWebhookResponse: true };
+    }
+
+    const items: INodeExecutionData[] = [
+      { json: submission as unknown as IDataObject },
+    ];
+
+    // "Respond to Webhook" owns the HTTP response; in every other mode n8n
+    // core answers per the webhook registration's resolved response mode
+    // (immediately for On Received, at execution end for When Last Node
+    // Finishes). Query parameters are never part of the emitted item.
+    if (context.getNodeParameter('responseMode', 'lastNode') === 'responseNode') {
+      return { workflowData: [items], noWebhookResponse: true };
+    }
+    return { workflowData: [items] };
   }
 
   res.writeHead(405, { 'Content-Type': 'application/json' });
@@ -65,7 +99,10 @@ export class JsonForm implements INodeType {
       {
         name: 'default',
         httpMethod: 'POST',
-        responseMode: 'onReceived',
+        // Resolved at request time from the node's Response Mode parameter so
+        // n8n core applies standard trigger mechanics (test and production
+        // URLs alike).
+        responseMode: '={{ $parameter["responseMode"] }}',
         path: '={{ $parameter["path"] }}',
         ndvHideMethod: true,
       },
@@ -78,6 +115,37 @@ export class JsonForm implements INodeType {
         required: true,
         default: 'json-form',
         description: 'The webhook path that serves the form and receives its submissions.',
+      },
+      {
+        displayName: 'Response Mode',
+        name: 'responseMode',
+        type: 'options',
+        options: [
+          {
+            name: 'On Received',
+            value: 'onReceived',
+            description: 'Responds as soon as this node runs',
+          },
+          {
+            name: 'When Last Node Finishes',
+            value: 'lastNode',
+            description: 'Returns data when the execution of the workflow finishes',
+          },
+          {
+            name: 'Respond to Webhook',
+            value: 'responseNode',
+            description: 'Response is handled by a Respond to Webhook node',
+          },
+        ],
+        default: 'lastNode',
+        description: 'When to respond to the form submission.',
+      },
+      {
+        displayName: 'Completion Message',
+        name: 'completionMessage',
+        type: 'string',
+        default: DEFAULT_COMPLETION_MESSAGE,
+        description: 'Shown on the page after a submission was received successfully.',
       },
     ],
   };

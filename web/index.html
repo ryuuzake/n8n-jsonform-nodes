@@ -22,38 +22,34 @@
       The Form configuration blob. The n8n node replaces this element's content
       with the real configuration before serving the page. In standalone dev
       mode the sample fixture below is used directly.
-      Keep in sync with nodes/JsonForm/sampleForm.ts.
+      Keep in sync with nodes/JsonForm/sampleForm.ts (the compiled output of
+      its Form definition, plus the default completion message).
     -->
     <script type="application/json" id="jsonform-config">
       {
         "schema": {
           "type": "object",
+          "title": "Sample form",
+          "description": "Tell us a little about yourself.",
           "properties": {
             "name": {
               "type": "string",
-              "title": "Full name",
-              "description": "Your given name and surname.",
-              "minLength": 2
+              "maxLength": 100
             },
             "email": {
               "type": "string",
-              "title": "Email",
-              "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+              "maxLength": 254
             },
             "role": {
               "type": "string",
-              "title": "Role",
               "enum": ["Developer", "Designer", "Manager"]
             },
             "startDate": {
               "type": "string",
-              "title": "Start date",
               "format": "date"
             },
             "newsletter": {
-              "type": "boolean",
-              "title": "Subscribe to the newsletter",
-              "default": true
+              "type": "boolean"
             }
           },
           "required": ["name", "email"]
@@ -61,13 +57,18 @@
         "uiSchema": {
           "type": "VerticalLayout",
           "elements": [
-            { "type": "Control", "scope": "#/properties/name" },
-            { "type": "Control", "scope": "#/properties/email" },
-            { "type": "Control", "scope": "#/properties/role" },
-            { "type": "Control", "scope": "#/properties/startDate" },
-            { "type": "Control", "scope": "#/properties/newsletter" }
+            { "type": "Control", "scope": "#/properties/name", "label": "Full name" },
+            { "type": "Control", "scope": "#/properties/email", "label": "Email" },
+            { "type": "Control", "scope": "#/properties/role", "label": "Role" },
+            { "type": "Control", "scope": "#/properties/startDate", "label": "Start date" },
+            {
+              "type": "Control",
+              "scope": "#/properties/newsletter",
+              "label": "Subscribe to the newsletter"
+            }
           ]
-        }
+        },
+        "completionMessage": "Thank you! Your submission has been received."
       }
     </script>
     <script type="module" src="/src/main.tsx"></script>

@@ -1,52 +1,30 @@
+import { compileForm } from '../../src/form-definition';
+import type { CompiledForm, Form } from '../../src/form-definition';
+
 /**
- * The fixed sample Form served while the rendering pipeline is being built
- * (RYU-6). Later slices replace this fixture with Fields compiled by the Form
- * Definition module (RYU-5 / RYU-8).
+ * The fixed sample Form served while configuration is still a fixture (until
+ * the builder slice swaps it for node parameters).
  *
- * Keep in sync with the equivalent fixture blob embedded in web/index.html so
- * the standalone dev server renders the same form the node serves.
+ * This single Form drives both directions of the submission loop: GET serves
+ * its compiled {schema, uiSchema}, and POST shapes incoming payloads with the
+ * same Field constraints, so client-side and server-side validation agree.
  */
-export const sampleFormConfig = {
-  schema: {
-    type: 'object',
-    properties: {
-      name: {
-        type: 'string',
-        title: 'Full name',
-        description: 'Your given name and surname.',
-        minLength: 2,
-      },
-      email: {
-        type: 'string',
-        title: 'Email',
-        pattern: '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$',
-      },
-      role: {
-        type: 'string',
-        title: 'Role',
-        enum: ['Developer', 'Designer', 'Manager'],
-      },
-      startDate: {
-        type: 'string',
-        title: 'Start date',
-        format: 'date',
-      },
-      newsletter: {
-        type: 'boolean',
-        title: 'Subscribe to the newsletter',
-        default: true,
-      },
+export const sampleForm: Form = {
+  title: 'Sample form',
+  description: 'Tell us a little about yourself.',
+  fields: [
+    { name: 'name', label: 'Full name', type: 'text', required: true, maxLength: 100 },
+    { name: 'email', label: 'Email', type: 'text', required: true, maxLength: 254 },
+    {
+      name: 'role',
+      label: 'Role',
+      type: 'select',
+      choices: ['Developer', 'Designer', 'Manager'],
     },
-    required: ['name', 'email'],
-  },
-  uiSchema: {
-    type: 'VerticalLayout',
-    elements: [
-      { type: 'Control', scope: '#/properties/name' },
-      { type: 'Control', scope: '#/properties/email' },
-      { type: 'Control', scope: '#/properties/role' },
-      { type: 'Control', scope: '#/properties/startDate' },
-      { type: 'Control', scope: '#/properties/newsletter' },
-    ],
-  },
+    { name: 'startDate', label: 'Start date', type: 'date' },
+    { name: 'newsletter', label: 'Subscribe to the newsletter', type: 'boolean' },
+  ],
 };
+
+/** The compiled page configuration served on webhook GET. */
+export const sampleFormConfig: CompiledForm = compileForm(sampleForm);
