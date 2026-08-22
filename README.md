@@ -9,6 +9,7 @@ n8n community node package (npm: `n8n-nodes-jsonform`) that serves **JSONForms-b
 - **JSON Form** trigger node: serves a self-contained form page on a webhook path.
 - Forms are defined with standard **JSON Schema + UI Schema** (JSONForms).
 - Rendering uses shadcn/ui components via the fragno JSONForms renderer set.
+- **Accent Color** node parameter recolors the form's primary theme (buttons, focus rings) in both light and dark mode; leave it empty for the stock shadcn theme.
 - Configuration is handled and stored by the n8n node itself:
   - **Import JSON config** — paste a `{ schema, uiSchema }` file (or fetch it from a URL at runtime), or
   - **Node UI builder** — add fields directly in the node parameters; the schema is generated for you.
