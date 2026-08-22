@@ -336,6 +336,9 @@ export class JsonForm implements INodeType {
         name: 'default',
         httpMethod: 'GET',
         responseMode: 'onReceived',
+        // Serve at exactly the configured Path; without this n8n prepends the
+        // node's internal webhookId to the registered production path.
+        isFullPath: true,
         path: '={{ $parameter["path"] }}',
         ndvHideMethod: true,
       },
@@ -346,6 +349,7 @@ export class JsonForm implements INodeType {
         // n8n core applies standard trigger mechanics (test and production
         // URLs alike).
         responseMode: '={{ $parameter["responseMode"] }}',
+        isFullPath: true,
         path: '={{ $parameter["path"] }}',
         ndvHideMethod: true,
       },
