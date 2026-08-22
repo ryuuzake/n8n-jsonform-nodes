@@ -57,11 +57,7 @@ function fieldEntryValues(): INodeProperties[] {
       name: 'type',
       type: 'options',
       default: 'text',
-      options: FIELD_TYPE_OPTIONS.map(({ name, value, description }) => ({
-        name,
-        value,
-        description,
-      })),
+      options: FIELD_TYPE_OPTIONS,
       description: 'Kind of input shown to the visitor.',
     },
     {
@@ -220,11 +216,18 @@ export async function handleJsonFormWebhook(
 
 /** Build the Form configured in the node UI's Fields collection. */
 function builtForm(context: IWebhookFunctions): Form {
-  return buildFormFromParameters({
+  const form = buildFormFromParameters({
     formTitle: context.getNodeParameter('formTitle', ''),
     formDescription: context.getNodeParameter('formDescription', ''),
     fields: context.getNodeParameter('fields', DEFAULT_FIELDS_VALUE),
   });
+  if (form.fields.length === 0) {
+    throw new NodeOperationError(
+      context.getNode(),
+      'No Fields configured. Add at least one Field to the Fields collection so the form has something to ask.',
+    );
+  }
+  return form;
 }
 
 /**

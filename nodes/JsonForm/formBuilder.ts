@@ -16,14 +16,26 @@ import type { Field, FieldType, Form } from '../../src/form-definition';
  */
 
 /** The exact v1 field-type vocabulary offered in the node UI. */
-export const FIELD_TYPE_OPTIONS: Array<{ name: string; value: FieldType; description?: string }> = [
+export const FIELD_TYPE_OPTIONS: Array<{
+  name: string;
+  value: FieldType;
+  description: string;
+}> = [
   { name: 'Text', value: 'text', description: 'Single-line text input' },
   { name: 'Long Text', value: 'textarea', description: 'Multi-line text input' },
   { name: 'Number', value: 'number', description: 'Numeric input with optional min/max' },
   { name: 'Date', value: 'date', description: 'Date picker with optional range' },
   { name: 'Switch', value: 'boolean', description: 'Boolean checkbox' },
-  { name: 'Dropdown', value: 'select', description: 'Pick one of several choices' },
-  { name: 'Multi-Select Dropdown', value: 'multiselect', description: 'Pick several of a list of choices' },
+  {
+    name: 'Dropdown',
+    value: 'select',
+    description: 'Pick one of several choices',
+  },
+  {
+    name: 'Multi-Select Dropdown',
+    value: 'multiselect',
+    description: 'Pick several of a list of choices',
+  },
 ];
 
 type RawEntry = Record<string, unknown>;
@@ -49,7 +61,9 @@ function rawEntries(fieldsParameter: unknown): RawEntry[] {
   }
   return entries.map((entry, index) => {
     if (!isRecord(entry)) {
-      throw new Error(`Field entry ${index} is not a valid object. Re-add it in the Fields collection.`);
+      throw new Error(
+        `Field entry ${index} is not a valid object. Re-add it in the Fields collection.`,
+      );
     }
     return entry;
   });
@@ -61,13 +75,13 @@ function optionalString(value: unknown): string | undefined {
   return asString.length > 0 ? asString : undefined;
 }
 
-function optionalNumber(entry: RawEntry, key: string, displayName: string): number | undefined {
+function optionalNumber(entry: RawEntry, key: string, display: string): number | undefined {
   const value = entry[key];
   if (value === undefined || value === null || value === '') return undefined;
   const asNumber = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(asNumber)) {
     throw new Error(
-      `Field "${displayName}" has an invalid ${key} value (${JSON.stringify(value)}): a number is required.`,
+      `Field "${display}" has an invalid ${key} value (${JSON.stringify(value)}): a number is required.`,
     );
   }
   return asNumber;
@@ -79,75 +93,66 @@ function requiredFlag(value: unknown): boolean | undefined {
   throw new Error(`The Required option must be a boolean, got ${JSON.stringify(value)}.`);
 }
 
-function choicesList(entry: RawEntry, displayName: string): string[] | undefined {
+function choicesList(entry: RawEntry, display: string): string[] | undefined {
   const value = entry.choices;
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
     throw new Error(
-      `Field "${displayName}" has invalid choices (${JSON.stringify(value)}): add choices one by one in the Choices collection.`,
+      `Field "${display}" has invalid choices (${JSON.stringify(value)}): add choices one by one in the Choices collection.`,
     );
   }
   return value.map((choice) => String(choice));
 }
 
-function normalizeEntry(entry: RawEntry, index: number): Field {
-  const label = optionalString(entry.label) ?? '';
-  const at = `Field ${index} ("${label}")`;
+/** Strip keys set to undefined so an untouched parameter stays absent. */
+function compact<T extends object>(object: T): T {
+  return Object.fromEntries(
+    Object.entries(object).filter(([, value]) => value !== undefined),
+  ) as T;
+}
 
+function normalizeEntry(entry: RawEntry, index: number): Field {
   const name = optionalString(entry.name);
+  const label = optionalString(entry.label);
+  // Errors identify the field by its name first, since that is what authors
+  // must fix; fall back to label and position while the name is missing.
+  const display = name ?? label ?? '';
   if (!name) {
-    throw new Error(`${at} is missing a Name.`);
+    throw new Error(`Field ${index} ("${display}") is missing a Name.`);
   }
-  const type = optionalString(entry.type) as FieldType | undefined;
+  const type = optionalString(entry.type);
   if (!type) {
-    throw new Error(`${at} is missing a Type.`);
+    throw new Error(`Field ${index} ("${display}") is missing a Type.`);
   }
+
+  const field: Field = { name, label: label ?? '', type: type as FieldType };
+  const required = requiredFlag(entry.required);
+  if (required !== undefined) field.required = required;
 
   // Constraints are read per type so leftovers from a previous type selection
   // (invisible in the UI after switching) never leak into the built Form.
-  switch (type) {
+  switch (type as FieldType) {
     case 'text':
-    case 'textarea': {
-      const maxLength = optionalNumber(entry, 'maxLength', label);
-      return { ...(withBase(name, label, type, entry)), ...(maxLength !== undefined ? { maxLength } : {}) };
-    }
-    case 'number': {
-      const min = optionalNumber(entry, 'min', label);
-      const max = optionalNumber(entry, 'max', label);
-      return {
-        ...withBase(name, label, type, entry),
-        ...(min !== undefined ? { min } : {}),
-        ...(max !== undefined ? { max } : {}),
-      };
-    }
-    case 'date': {
-      const minDate = optionalString(entry.minDate);
-      const maxDate = optionalString(entry.maxDate);
-      return {
-        ...withBase(name, label, type, entry),
-        ...(minDate !== undefined ? { minDate } : {}),
-        ...(maxDate !== undefined ? { maxDate } : {}),
-      };
-    }
+    case 'textarea':
+      field.maxLength = optionalNumber(entry, 'maxLength', display);
+      break;
+    case 'number':
+      field.min = optionalNumber(entry, 'min', display);
+      field.max = optionalNumber(entry, 'max', display);
+      break;
+    case 'date':
+      field.minDate = optionalString(entry.minDate);
+      field.maxDate = optionalString(entry.maxDate);
+      break;
     case 'select':
-    case 'multiselect': {
-      const choices = choicesList(entry, label);
-      return { ...withBase(name, label, type, entry), ...(choices !== undefined ? { choices } : {}) };
-    }
-    case 'boolean':
-      return withBase(name, label, type, entry);
+    case 'multiselect':
+      field.choices = choicesList(entry, display);
+      break;
     default:
-      // Unknown types are rejected by the Form Definition module with its own
-      // typed error; pass through untouched so that seam stays authoritative.
-      return { name, label, type };
+      break;
   }
-}
 
-function withBase(name: string, label: string, type: FieldType, entry: RawEntry): Field {
-  const field: Field = { name, label, type };
-  const required = requiredFlag(entry.required);
-  if (required !== undefined) field.required = required;
-  return field;
+  return compact(field);
 }
 
 /** Build the configured Form from the node's parameters. */
@@ -155,9 +160,9 @@ export function buildFormFromParameters(parameters: FormBuilderParameters): Form
   const title = optionalString(parameters.formTitle);
   const description = optionalString(parameters.formDescription);
 
-  return {
+  return compact({
     ...(title !== undefined ? { title } : {}),
     ...(description !== undefined ? { description } : {}),
     fields: rawEntries(parameters.fields).map(normalizeEntry),
-  };
+  });
 }

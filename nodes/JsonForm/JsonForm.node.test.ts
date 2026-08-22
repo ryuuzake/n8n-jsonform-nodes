@@ -323,17 +323,22 @@ describe('JsonForm webhook', () => {
 
     for (const [label, parameters, errorMatch] of invalidCases) {
       it(`fails fast on ${label} when serving the page (GET)`, async () => {
+        await expect(setup({ method: 'GET', parameters })).rejects.toThrow(NodeOperationError);
         await expect(setup({ method: 'GET', parameters })).rejects.toThrow(errorMatch);
       });
 
       it(`fails fast on ${label} when receiving submissions (POST)`, async () => {
         await expect(setup({ method: 'POST', parameters })).rejects.toThrow(NodeOperationError);
-      });
-
-      it(`surfaces ${label} as a node operation error naming the rule`, async () => {
-        await expect(setup({ method: 'GET', parameters })).rejects.toThrow(NodeOperationError);
+        await expect(setup({ method: 'POST', parameters })).rejects.toThrow(errorMatch);
       });
     }
+
+    it('fails fast when no Fields are configured', async () => {
+      await expect(setup({ method: 'GET', parameters: {} })).rejects.toThrow(/at least one field/i);
+      await expect(setup({ method: 'POST', parameters: { fields: { field: [] } } })).rejects.toThrow(
+        /at least one field/i,
+      );
+    });
 
     it('emits nothing when the built Form is invalid', async () => {
       const { result } = await setup({
