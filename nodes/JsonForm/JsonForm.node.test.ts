@@ -1,7 +1,37 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { sampleForm, sampleFormConfig } from './sampleForm';
+import { sampleFormConfig } from './sampleForm';
 import { JsonForm } from './JsonForm.node';
+
+/** An import document replacing the fixture Form in the tests below. */
+const importedDoc = JSON.stringify({
+  schema: {
+    type: 'object',
+    title: 'Imported form',
+    properties: {
+      email: { type: 'string', maxLength: 254 },
+      plan: { type: 'string', enum: ['free', 'pro'] },
+    },
+    required: ['email'],
+  },
+  uiSchema: {
+    type: 'VerticalLayout',
+    elements: [
+      { type: 'Control', scope: '#/properties/email', label: 'Email' },
+      { type: 'Control', scope: '#/properties/plan', label: 'Plan' },
+    ],
+  },
+});
+
+const nestedDoc = JSON.stringify({
+  schema: {
+    type: 'object',
+    properties: {
+      address: { type: 'object', properties: { city: { type: 'string' } } },
+    },
+  },
+  uiSchema: { type: 'VerticalLayout', elements: [] },
+});
 
 type FakeRes = {
   statusCode?: number;
@@ -135,6 +165,12 @@ describe('JsonForm webhook', () => {
     expect(res.body).toContain('"completionMessage":"Custom thanks!"');
   });
 
+  it('exposes an Import Config parameter that overrides builder Fields when non-empty', () => {
+    const description = new JsonForm().description;
+    const importConfig = description.properties.find((property) => property.name === 'importConfig');
+    expect(importConfig).toBeDefined();
+  });
+
   it('GET flows a configured Accent Color into the config blob', async () => {
     const { res } = await setup({
       method: 'GET',
@@ -148,6 +184,85 @@ describe('JsonForm webhook', () => {
     const { res } = await setup({ method: 'GET' });
 
     expect(res.body).not.toContain('"accentColor"');
+  });
+  describe('import config', () => {
+    it('GET serves a form compiled from the imported document instead of the fixture', async () => {
+      const { res } = await setup({ method: 'GET', parameters: { importConfig: importedDoc } });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"Imported form"');
+      expect(res.body).toContain('"required":["email"]');
+      // Fixture fields are replaced, never merged.
+      expect(res.body).not.toContain('Sample form');
+      expect(res.body).not.toContain('#/properties/name');
+    });
+
+    it('GET explains the rejection instead of serving a broken or empty form', async () => {
+      const { result, res } = await setup({ method: 'GET', parameters: { importConfig: nestedDoc } });
+
+      expect(result?.noWebhookResponse).toBe(true);
+      expect(res.statusCode).toBe(500);
+      expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
+      expect(res.body).toContain('$.address.city');
+      expect(res.body).not.toContain('id="jsonform-config"');
+    });
+
+    it('GET rejects unparseable documents with a clear error', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        parameters: { importConfig: '{definitely not json' },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toContain('not valid JSON');
+    });
+
+    it('POST shapes submissions against the imported Form', async () => {
+      const { result } = await setup({
+        method: 'POST',
+        body: { email: 'ada@example.com', plan: 'pro' },
+        parameters: { importConfig: importedDoc },
+      });
+
+      const json = result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
+      expect(json.email).toBe('ada@example.com');
+      expect(json.plan).toBe('pro');
+
+      // The fixture's fields are gone: its required values are not demanded
+      // and its name field is no longer accepted.
+      const fixtureOnly = await setup({
+        method: 'POST',
+        body: { email: 'ada@example.com', plan: 'pro', name: 'Ada' },
+        parameters: { importConfig: importedDoc },
+      });
+      const shaped = fixtureOnly.result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
+      expect(shaped.name).toBeUndefined();
+    });
+
+    it('POST validates against the imported Form constraints', async () => {
+      const { result, res } = await setup({
+        method: 'POST',
+        body: { plan: 'pro' },
+        parameters: { importConfig: importedDoc },
+      });
+
+      expect(result?.workflowData).toBeUndefined();
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/email/i);
+    });
+
+    it('POST refuses to run against an invalid imported document', async () => {
+      const { result, res } = await setup({
+        method: 'POST',
+        body: {},
+        parameters: { importConfig: nestedDoc },
+      });
+
+      expect(result?.workflowData).toBeUndefined();
+      expect(result?.noWebhookResponse).toBe(true);
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).error).toContain('$.address.city');
+    });
   });
 
   describe('valid POST', () => {

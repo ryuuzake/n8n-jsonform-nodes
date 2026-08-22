@@ -7,20 +7,22 @@ import type {
   IWebhookResponseData,
 } from 'n8n-workflow';
 
-import { shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
+import { compileForm, shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
 import type { Submission } from '../../src/form-definition';
 
-import { buildFormPageResponse, loadFormTemplate } from './formPage';
-import { sampleForm, sampleFormConfig } from './sampleForm';
+import { buildFormPageResponse, buildErrorResponse, loadFormTemplate } from './formPage';
+import { ConfigImportError, resolveEffectiveForm } from './effectiveForm';
 
 export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
 
 /**
  * Serve the JSON Form page on webhook GET and receive its submissions on POST.
  *
- * POST is validated server-side with the same Form Definition seam that
- * compiled the served page (defense in depth), shaped into one flat trigger
- * item, and emitted for n8n core to answer per the selected Response Mode.
+ * A non-empty Import Config parameter is transpiled into Fields and replaces
+ * the builder-defined Fields at resolution time. POST is validated
+ * server-side with the same Form Definition seam that compiled the served
+ * page (defense in depth), shaped into one flat trigger item, and emitted for
+ * n8n core to answer per the selected Response Mode.
  */
 export async function handleJsonFormWebhook(
   context: IWebhookFunctions,
@@ -38,25 +40,43 @@ export async function handleJsonFormWebhook(
     const accentParameter = context.getNodeParameter('accentColor', '');
     const accentColor = typeof accentParameter === 'string' ? accentParameter.trim() : '';
 
-    // Only include Accent Color when set so the served blob stays byte-identical
-    // to before for stock-themed forms.
-    const pageConfig = {
-      ...sampleFormConfig,
-      completionMessage,
-      ...(accentColor ? { accentColor } : {}),
-    };
-
-    const page = buildFormPageResponse(pageConfig, loadTemplate);
-    res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
-    res.end(page.body);
+    try {
+      // Transpile → effective Field list → compiled page config. An imported
+      // document replaces builder Fields wholesale; it is never merged.
+      const form = resolveEffectiveForm(context.getNodeParameter('importConfig', ''));
+      const pageConfig = {
+        ...compileForm(form),
+        completionMessage,
+        // Only include Accent Color when set so the served blob stays
+        // byte-identical to before for stock-themed forms.
+        ...(accentColor ? { accentColor } : {}),
+      };
+      const page = buildFormPageResponse(pageConfig, loadTemplate);
+      res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
+      res.end(page.body);
+    } catch (error) {
+      if (!(error instanceof ConfigImportError)) throw error;
+      const errorPage = buildErrorResponse(
+        'Invalid form configuration',
+        `The imported form document was rejected:\n\n${error.message}`,
+      );
+      res.writeHead(errorPage.statusCode, { 'Content-Type': errorPage.contentType });
+      res.end(errorPage.body);
+    }
     return { noWebhookResponse: true };
   }
 
   if (method === 'POST') {
     let submission: Submission;
     try {
-      submission = shapeSubmission(sampleForm, context.getBodyData());
+      const form = resolveEffectiveForm(context.getNodeParameter('importConfig', ''));
+      submission = shapeSubmission(form, context.getBodyData());
     } catch (error) {
+      if (error instanceof ConfigImportError) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+        return { noWebhookResponse: true };
+      }
       if (!(error instanceof SubmissionShapeError)) throw error;
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message, issues: error.issues }));
@@ -147,6 +167,14 @@ export class JsonForm implements INodeType {
         ],
         default: 'lastNode',
         description: 'When to respond to the form submission.',
+      },
+      {
+        displayName: 'Import Config',
+        name: 'importConfig',
+        type: 'json',
+        default: '',
+        description:
+          'Optional pasted { schema, uiSchema } document. When set, it is transpiled into Fields and replaces the fields defined in the builder. Constructs outside the supported subset are rejected with exact paths.',
       },
       {
         displayName: 'Completion Message',
