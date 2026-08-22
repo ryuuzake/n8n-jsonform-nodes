@@ -9,20 +9,24 @@ import type {
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
-import {
-  compileForm,
-  shapeSubmission,
-  SubmissionShapeError,
-} from '../../src/form-definition';
+import { compileForm, shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
 import type { CompiledForm, Form, Submission } from '../../src/form-definition';
 
-import { buildFormFromParameters, FIELD_TYPE_OPTIONS } from './formBuilder';
-import { buildFormPageResponse, loadFormTemplate } from './formPage';
+import {
+  buildFormFromParameters,
+  FIELD_TYPE_OPTIONS,
+} from './formBuilder';
+import { buildFormPageResponse, buildErrorResponse, loadFormTemplate } from './formPage';
+import { ConfigImportError, resolveEffectiveForm } from './effectiveForm';
+import { validateWebhookAuthentication, WebhookAuthorizationError } from './authentication';
 
 export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
 
 /** Default value of the editable Fields collection: an empty form. */
 export const DEFAULT_FIELDS_VALUE = { field: [] };
+
+/** Stand-in handed to the effective-form seam when an import replaces builder Fields wholesale. */
+const EMPTY_BUILDER_FORM: Form = { fields: [] };
 
 const NAME_RULES_HINT =
   'Identifier used as the workflow key for this field. Must match ^[A-Za-z_][A-Za-z0-9_]*$, be unique within the form, and cannot be the reserved name "submittedAt".';
@@ -148,12 +152,15 @@ export const FIELDS_PROPERTY: INodeProperties = {
 /**
  * Serve the JSON Form page on webhook GET and receive its submissions on POST.
  *
- * The served form is generated from the Fields built in the node UI through
- * the Form Definition module (compile on GET). POST is validated server-side
- * against the same built Form (defense in depth), shaped into one flat
- * trigger item, and emitted for n8n core to answer per the selected Response
- * Mode. An invalid Field configuration fails fast with a node error naming
- * the offending field and rule.
+ * Optional Basic Auth / Header Auth credentials gate every request (standard
+ * n8n webhook authentication; `none` keeps the form anonymous). The served
+ * Form comes from the Fields built in the node UI through the Form Definition
+ * module (compile on GET); a non-empty Import Config replaces those builder
+ * Fields wholesale. POST is validated server-side against the same Form
+ * (defense in depth), shaped into one flat trigger item, and emitted for n8n
+ * core to answer per the selected Response Mode. An invalid Field
+ * configuration fails fast with a node error naming the offending field and
+ * rule; an invalid imported document is explained instead of served.
  */
 export async function handleJsonFormWebhook(
   context: IWebhookFunctions,
@@ -163,30 +170,72 @@ export async function handleJsonFormWebhook(
   const res = context.getResponseObject();
   const method = req.method ?? 'GET';
 
+  // Standard n8n webhook authorization: the selected credentials gate every
+  // request (page serving and submissions alike) before anything runs, so an
+  // unauthorized caller gets a 401 challenge instead of a workflow execution.
+  // Like n8n's own FormTrigger, every authorization failure — including a
+  // misconfigured credential — answers a uniform 401 so callers cannot probe
+  // how the node is set up. The Basic challenge header is only sent when
+  // Basic Auth actually protects the form.
+  try {
+    await validateWebhookAuthentication(context);
+  } catch (error) {
+    if (!(error instanceof WebhookAuthorizationError)) throw error;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if ((context.getNodeParameter('authentication', 'none') as string) === 'basicAuth') {
+      headers['WWW-Authenticate'] = 'Basic realm="Enter credentials"';
+    }
+    res.writeHead(401, headers);
+    res.end(JSON.stringify({ error: error.message }));
+    return { noWebhookResponse: true };
+  }
+
   if (method === 'GET') {
     const completionMessage = context.getNodeParameter(
       'completionMessage',
       DEFAULT_COMPLETION_MESSAGE,
     ) as string;
+    const accentParameter = context.getNodeParameter('accentColor', '');
+    const accentColor = typeof accentParameter === 'string' ? accentParameter.trim() : '';
 
-    let config: CompiledForm;
     try {
-      config = compileForm(builtForm(context));
+      // Builder Fields are the base; an imported document replaces them
+      // wholesale (it is never merged).
+      const pageConfig = {
+        ...compileForm(resolveRequestForm(context)),
+        completionMessage,
+        // Only include Accent Color when set so the served blob stays
+        // byte-identical to before for stock-themed forms.
+        ...(accentColor ? { accentColor } : {}),
+      };
+      const page = buildFormPageResponse(pageConfig, loadTemplate);
+      res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
+      res.end(page.body);
     } catch (error) {
+      if (error instanceof ConfigImportError) {
+        const errorPage = buildErrorResponse(
+          'Invalid form configuration',
+          `The imported form document was rejected:\n\n${error.message}`,
+        );
+        res.writeHead(errorPage.statusCode, { 'Content-Type': errorPage.contentType });
+        res.end(errorPage.body);
+        return { noWebhookResponse: true };
+      }
       throw toConfigError(context, error);
     }
-
-    const page = buildFormPageResponse({ ...config, completionMessage }, loadTemplate);
-    res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
-    res.end(page.body);
     return { noWebhookResponse: true };
   }
 
   if (method === 'POST') {
     let submission: Submission;
     try {
-      submission = shapeSubmission(builtForm(context), context.getBodyData());
+      submission = shapeSubmission(resolveRequestForm(context), context.getBodyData());
     } catch (error) {
+      if (error instanceof ConfigImportError) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+        return { noWebhookResponse: true };
+      }
       if (error instanceof SubmissionShapeError) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message, issues: error.issues }));
@@ -212,6 +261,19 @@ export async function handleJsonFormWebhook(
   res.writeHead(405, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: `Method ${method} is not allowed.` }));
   return { noWebhookResponse: true };
+}
+
+/**
+ * The Form this request serves or validates against: an imported document
+ * replaces builder Fields wholesale and is answered even when the builder is
+ * untouched; otherwise the Fields built in the node UI are required.
+ */
+function resolveRequestForm(context: IWebhookFunctions): Form {
+  const importConfig = context.getNodeParameter('importConfig', '');
+  if (typeof importConfig === 'string' && importConfig.trim() !== '') {
+    return resolveEffectiveForm(EMPTY_BUILDER_FORM, importConfig);
+  }
+  return builtForm(context);
 }
 
 /** Build the Form configured in the node UI's Fields collection. */
@@ -257,6 +319,18 @@ export class JsonForm implements INodeType {
     },
     inputs: [],
     outputs: ['main'],
+    credentials: [
+      {
+        name: 'httpBasicAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['basicAuth'] } },
+      },
+      {
+        name: 'httpHeaderAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['headerAuth'] } },
+      },
+    ],
     webhooks: [
       {
         name: 'default',
@@ -284,6 +358,31 @@ export class JsonForm implements INodeType {
         required: true,
         default: 'json-form',
         description: 'The webhook path that serves the form and receives its submissions.',
+      },
+      {
+        displayName: 'Authentication',
+        name: 'authentication',
+        type: 'options',
+        options: [
+          {
+            name: 'Basic Auth',
+            value: 'basicAuth',
+            description: 'Callers must present the user/password of a Basic Auth credential.',
+          },
+          {
+            name: 'Header Auth',
+            value: 'headerAuth',
+            description:
+              'Callers must send the header name/value pair stored in a Header Auth credential.',
+          },
+          {
+            name: 'None',
+            value: 'none',
+            description: 'Anyone with the URL can open the form and submit it anonymously.',
+          },
+        ],
+        default: 'none',
+        description: 'Whether opening the page and submitting the form require authentication.',
       },
       FIELDS_PROPERTY,
       {
@@ -327,11 +426,27 @@ export class JsonForm implements INodeType {
         description: 'When to respond to the form submission.',
       },
       {
+        displayName: 'Import Config',
+        name: 'importConfig',
+        type: 'json',
+        default: '',
+        description:
+          'Optional pasted { schema, uiSchema } document. When set, it is transpiled into Fields and replaces the fields defined in the builder. Constructs outside the supported subset are rejected with exact paths.',
+      },
+      {
         displayName: 'Completion Message',
         name: 'completionMessage',
         type: 'string',
         default: DEFAULT_COMPLETION_MESSAGE,
         description: 'Shown on the page after a submission was received successfully.',
+      },
+      {
+        displayName: 'Accent Color',
+        name: 'accentColor',
+        type: 'color',
+        default: '',
+        description:
+          'Recolors the form primary theme color (buttons, focus rings). Leave empty for the stock shadcn theme.',
       },
     ],
   };

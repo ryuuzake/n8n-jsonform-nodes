@@ -40,6 +40,36 @@ export interface FormPageResponse {
   body: string;
 }
 
+/** Escape text for safe inclusion in an HTML body. */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Build the payload served when the Form configuration is invalid and no
+ * form can be rendered — a plain explanatory page instead of a broken one.
+ */
+export function buildErrorResponse(title: string, detail: string): FormPageResponse {
+  return {
+    statusCode: 500,
+    contentType: 'text/html; charset=utf-8',
+    body: `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
+  <body style="font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem;">
+    <h1>${escapeHtml(title)}</h1>
+    <p>This form cannot be displayed because its configuration is invalid.</p>
+    <pre style="white-space: pre-wrap; background: #f4f4f5; padding: 1rem; border-radius: 0.5rem;">${escapeHtml(detail)}</pre>
+  </body>
+</html>`,
+  };
+}
+
 /**
  * Build the HTTP payload served on webhook GET: the self-contained page with
  * the Form configuration blob injected.
