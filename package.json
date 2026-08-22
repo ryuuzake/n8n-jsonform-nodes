@@ -1,0 +1,49 @@
+{
+  "name": "n8n-nodes-jsonform",
+  "version": "0.1.0",
+  "description": "n8n trigger node that serves a JSONForms-based form rendered with shadcn/ui (via @fragno-dev/jsonforms-shadcn-renderers). Configure the form in the node UI or import a JSON config.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "jsonforms",
+    "shadcn",
+    "form"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/ryuuzake/n8n-jsonform-nodes#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryuuzake/n8n-jsonform-nodes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryuuzake/n8n-jsonform-nodes/issues"
+  },
+  "main": "dist/nodes/JsonForm/JsonForm.node.js",
+  "scripts": {
+    "build": "npm run build:web && npm run build:node",
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:node": "tsc && cp nodes/JsonForm/jsonform.svg nodes/JsonForm/form.html dist/nodes/JsonForm/",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist && rimraf nodes/JsonForm/form.html"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "nodes": [
+      "dist/nodes/JsonForm/JsonForm.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "n8n-workflow": "^1.82.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
