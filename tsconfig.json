@@ -1,19 +1,21 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
-    "moduleResolution": "node",
     "lib": ["ES2022"],
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "declaration": true,
     "outDir": "dist",
     "rootDir": ".",
-    "sourceMap": false,
-    "declaration": false,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["nodes/**/*.ts"],
-  "exclude": ["**/*.test.ts", "**/*.spec.ts", "node_modules", "web", "dist"]
+  "include": ["src/**/*", "nodes/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "web"]
 }

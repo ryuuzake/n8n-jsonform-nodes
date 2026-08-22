@@ -22,12 +22,13 @@
   "scripts": {
     "build": "npm run build:web && npm run build:node",
     "build:web": "npm --prefix web install && npm --prefix web run build && node scripts/place-web-bundle.mjs",
-    "build:node": "tsc && cp nodes/JsonForm/jsonform.svg nodes/JsonForm/form.html dist/nodes/JsonForm/",
+    "build:node": "tsc -p tsconfig.build.json && cp nodes/JsonForm/jsonform.svg nodes/JsonForm/form.html dist/nodes/JsonForm/",
     "dev": "tsc --watch",
     "dev:web": "npm --prefix web run dev",
+    "clean": "rimraf dist && rimraf nodes/JsonForm/form.html",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "clean": "rimraf dist && rimraf nodes/JsonForm/form.html"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
     "dist"
