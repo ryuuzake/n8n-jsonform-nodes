@@ -10,6 +10,11 @@ export interface PageConfig {
   uiSchema: UISchemaElement;
   /** Shown on the success card after a submission was received. */
   completionMessage?: string;
+  /**
+   * Recolors the primary theme variables (buttons, focus rings) in both light
+   * and dark mode. Unset or invalid values keep the stock shadcn theme.
+   */
+  accentColor?: string;
 }
 
 const CONFIG_ELEMENT_ID = 'jsonform-config';

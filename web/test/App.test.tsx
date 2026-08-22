@@ -40,6 +40,36 @@ function mountAppWithConfig(config: PageConfig) {
 afterEach(() => {
   vi.restoreAllMocks();
   document.body.innerHTML = '';
+  // applyAccentTheme writes inline custom properties on <html>, which jsdom
+  // keeps across tests in this file.
+  document.documentElement.removeAttribute('style');
+});
+
+describe('accent color theming', () => {
+  it('applies a configured accent to the primary theme variables on <html>', () => {
+    mountAppWithConfig({ ...fixture, accentColor: '#7c3aed' });
+
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue('--primary')).toBe('#7c3aed');
+    expect(style.getPropertyValue('--ring')).toBe('#7c3aed');
+    // Contrast foreground is derived; wiring it through is what matters here.
+    expect(style.getPropertyValue('--primary-foreground')).not.toBe('');
+  });
+
+  it('leaves the html element untouched when no accent is configured', () => {
+    mountAppWithConfig(fixture);
+
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue('--primary')).toBe('');
+    expect(style.getPropertyValue('--ring')).toBe('');
+    expect(style.getPropertyValue('--primary-foreground')).toBe('');
+  });
+
+  it('ignores an invalid accent instead of partially theming the page', () => {
+    mountAppWithConfig({ ...fixture, accentColor: 'not-a-color' });
+
+    expect(document.documentElement.style.getPropertyValue('--primary')).toBe('');
+  });
 });
 
 describe('served form page', () => {
