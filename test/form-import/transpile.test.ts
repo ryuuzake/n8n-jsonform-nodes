@@ -279,6 +279,35 @@ describe("transpileConfig — unsupported constructs are rejected loudly", () =>
     expect(pathsOf(docWith({ meta: { type: "object" } }))).toEqual(["$.meta"]);
   });
 
+  it("rejects arrays nested inside objects instead of flattening them into fields", () => {
+    const paths = pathsOf(
+      docWith({
+        address: {
+          type: "object",
+          properties: { tags: { type: "array", items: { type: "string", enum: ["red"] } } },
+        },
+      }),
+    );
+
+    expect(paths).toEqual(["$.address.tags"]);
+
+    const form: Form | undefined = (() => {
+      try {
+        return transpileConfig(
+          docWith({
+            address: {
+              type: "object",
+              properties: { tags: { type: "array", items: { type: "string", enum: ["red"] } } },
+            },
+          }),
+        );
+      } catch {
+        return undefined;
+      }
+    })();
+    expect(form).toBeUndefined();
+  });
+
   it("rejects array-of-object properties at the exact item paths", () => {
     const paths = pathsOf(
       docWith({

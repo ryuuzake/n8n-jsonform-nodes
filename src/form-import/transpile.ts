@@ -103,15 +103,18 @@ class Transpiler {
       this.add("$.schema.type", 'the root schema must have "type": "object".');
     }
 
-    for (const key of ["title", "description"] as const) {
-      const value = schema[key];
-      if (value !== undefined && typeof value !== "string") {
-        this.add(`$.schema.${key}`, `"${key}" must be a string.`);
-      } else if (typeof value === "string" && key === "title") {
-        this.formTitle = value;
-      } else if (typeof value === "string") {
-        this.formDescription = value;
-      }
+    const title = schema.title;
+    if (title !== undefined && typeof title !== "string") {
+      this.add("$.schema.title", '"title" must be a string.');
+    } else if (typeof title === "string") {
+      this.formTitle = title;
+    }
+
+    const description = schema.description;
+    if (description !== undefined && typeof description !== "string") {
+      this.add("$.schema.description", '"description" must be a string.');
+    } else if (typeof description === "string") {
+      this.formDescription = description;
     }
 
     for (const keyword of [...VARIANT_KEYWORDS, ...CONDITIONAL_KEYWORDS]) {
@@ -169,8 +172,20 @@ class Transpiler {
 
     const type = schema.type;
 
+    if (nested) {
+      // Nothing under a rejected container becomes a Field. Nested objects
+      // are still descended to report every lost leaf at its exact path;
+      // every other construct is reported where it stands.
+      if (type === "object") {
+        this.descendIntoObject(schema, path);
+      } else {
+        this.add(path, "nested inside an object; flatten nested objects into top-level fields.");
+      }
+      return;
+    }
+
     // Containers are never Fields themselves; descend to report every leaf
-    // that would be lost, wherever they appear.
+    // that would be lost.
     if (type === "object") {
       this.reportBlockedKeywords(schema, path);
       this.descendIntoObject(schema, path);
@@ -179,11 +194,6 @@ class Transpiler {
     if (type === "array") {
       this.reportBlockedKeywords(schema, path);
       this.readArray(schema, path, name);
-      return;
-    }
-
-    if (nested) {
-      this.add(path, "nested inside an object; flatten nested objects into top-level fields.");
       return;
     }
 
@@ -209,12 +219,6 @@ class Transpiler {
         return;
       case "integer":
         this.add(path, '"integer" is not supported; use "number".');
-        return;
-      case "object":
-        this.descendIntoObject(schema, path);
-        return;
-      case "array":
-        this.readArray(schema, path, name);
         return;
       default:
         this.add(path, `unsupported type "${type}".`);
