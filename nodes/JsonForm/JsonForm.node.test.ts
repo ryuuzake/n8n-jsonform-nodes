@@ -47,6 +47,49 @@ describe('buildFormPageResponse', () => {
   });
 });
 
+describe('JsonForm node description', () => {
+  it('exposes n8n\'s standard Response Mode options with When Last Node Finishes as default', () => {
+    const description = new JsonForm().description;
+    const responseMode = description.properties.find((property) => property.name === 'responseMode');
+    if (!responseMode) throw new Error('responseMode property must exist');
+
+    expect(responseMode).toMatchObject({ type: 'options', default: 'lastNode' });
+    const options = (
+      'options' in responseMode && Array.isArray(responseMode.options)
+        ? responseMode.options
+        : []
+    ) as Array<{ value: string; name: string }>;
+    expect(options.map((option) => option.value)).toEqual([
+      'onReceived',
+      'lastNode',
+      'responseNode',
+    ]);
+    expect(options.map((option) => option.name)).toEqual([
+      'On Received',
+      'When Last Node Finishes',
+      'Respond to Webhook',
+    ]);
+  });
+
+  it('resolves the POST webhook response mode from the node parameter at request time', () => {
+    const postWebhook = new JsonForm().description.webhooks?.find(
+      (webhook) => webhook.httpMethod === 'POST',
+    );
+
+    // Standard trigger mechanics: n8n core evaluates this registration
+    // expression per request, so test and production URLs behave alike.
+    expect(postWebhook?.responseMode).toBe('={{ $parameter["responseMode"] }}');
+  });
+
+  it('keeps GET registered as onReceived because the page is answered directly', () => {
+    const getWebhook = new JsonForm().description.webhooks?.find(
+      (webhook) => webhook.httpMethod === 'GET',
+    );
+
+    expect(getWebhook?.responseMode).toBe('onReceived');
+  });
+});
+
 describe('JsonForm webhook', () => {
   const realLoadPageTemplate = JsonForm.loadPageTemplate;
   beforeEach(() => {
@@ -69,7 +112,6 @@ describe('JsonForm webhook', () => {
       getRequestObject: vi.fn(() => ({ method })),
       getResponseObject: vi.fn(() => res),
       getBodyData: vi.fn(() => body),
-      getQueryData: vi.fn(() => ({ utm: 'ignored' })),
       getNodeParameter: vi.fn((name: string, fallback?: unknown) =>
         name in parameters ? parameters[name] : fallback,
       ),
@@ -145,14 +187,17 @@ describe('JsonForm webhook', () => {
     });
 
     it('does not answer POST itself outside Respond-to-Webhook mode so n8n applies the response mode', async () => {
-      const { result, res } = await setup({
-        method: 'POST',
-        body: validBody,
-        parameters: { responseMode: 'lastNode' },
-      });
+      for (const responseMode of ['onReceived', 'lastNode'] as const) {
+        const { result, res } = await setup({
+          method: 'POST',
+          body: validBody,
+          parameters: { responseMode },
+        });
 
-      expect(result?.noWebhookResponse).toBeFalsy();
-      expect(res.writeHeadCalls).toBe(0);
+        expect(result?.noWebhookResponse).toBeFalsy();
+        expect(result?.workflowData?.[0]).toHaveLength(1);
+        expect(res.writeHeadCalls).toBe(0);
+      }
     });
 
     it('leaves the response to the Respond to Webhook node in responseNode mode', async () => {
