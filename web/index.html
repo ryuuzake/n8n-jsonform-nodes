@@ -20,10 +20,9 @@
 
     <!--
       The Form configuration blob. The n8n node replaces this element's content
-      with the real configuration before serving the page. In standalone dev
-      mode the sample fixture below is used directly.
-      Keep in sync with nodes/JsonForm/sampleForm.ts (the compiled output of
-      its Form definition, plus the default completion message).
+      with the real configuration (compiled from the Fields built in the node
+      UI) before serving the page. The sample fixture below is used directly in
+      standalone dev mode (`npm --prefix web run dev`) for hot-reload iteration.
     -->
     <script type="application/json" id="jsonform-config">
       {
