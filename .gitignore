@@ -4,5 +4,7 @@ web/dist/
 web/components.json.bak
 *.tsbuildinfo
 .DS_Store
+# Packed tarballs from `npm pack` (local install testing)
+*.tgz
 # Generated single-file web bundle (built by `npm run build:web`)
 nodes/JsonForm/form.html

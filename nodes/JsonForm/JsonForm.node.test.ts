@@ -194,6 +194,15 @@ describe('JsonForm node description', () => {
     expect(getWebhook?.responseMode).toBe('onReceived');
   });
 
+  it('registers every webhook with isFullPath so n8n serves the exact configured Path', () => {
+    // Without isFullPath, n8n prepends the node instance's internal webhookId
+    // to the registered production path (e.g. /webhook/<uuid>/json-form).
+    for (const webhook of description.webhooks ?? []) {
+      expect(webhook.isFullPath).toBe(true);
+      expect(webhook.path).toBe('={{ $parameter["path"] }}');
+    }
+  });
+
   it('offers Fields as an editable, reorderable collection of field entries', () => {
     const fields = findProperty('fields');
 
