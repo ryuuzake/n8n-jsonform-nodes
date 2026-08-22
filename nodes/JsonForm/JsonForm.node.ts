@@ -1,31 +1,166 @@
 import type {
   IDataObject,
   INodeExecutionData,
+  INodeProperties,
   INodeType,
   INodeTypeDescription,
   IWebhookFunctions,
   IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeOperationError } from 'n8n-workflow';
 
 import { compileForm, shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
-import type { Submission } from '../../src/form-definition';
+import type { CompiledForm, Form, Submission } from '../../src/form-definition';
 
+import {
+  buildFormFromParameters,
+  FIELD_TYPE_OPTIONS,
+} from './formBuilder';
 import { buildFormPageResponse, buildErrorResponse, loadFormTemplate } from './formPage';
 import { ConfigImportError, resolveEffectiveForm } from './effectiveForm';
 import { validateWebhookAuthentication, WebhookAuthorizationError } from './authentication';
 
 export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
 
+/** Default value of the editable Fields collection: an empty form. */
+export const DEFAULT_FIELDS_VALUE = { field: [] };
+
+/** Stand-in handed to the effective-form seam when an import replaces builder Fields wholesale. */
+const EMPTY_BUILDER_FORM: Form = { fields: [] };
+
+const NAME_RULES_HINT =
+  'Identifier used as the workflow key for this field. Must match ^[A-Za-z_][A-Za-z0-9_]*$, be unique within the form, and cannot be the reserved name "submittedAt".';
+
+/**
+ * Entry values for the Fields collection. Constraints are shown
+ * conditionally by field type; optional numeric constraints default to an
+ * empty value so an untouched input never produces a hidden bound.
+ */
+function fieldEntryValues(): INodeProperties[] {
+  return [
+    {
+      displayName: 'Name',
+      name: 'name',
+      type: 'string',
+      required: true,
+      default: '',
+      placeholder: 'e.g. first_name',
+      hint: NAME_RULES_HINT,
+      description: 'Becomes the key of this field in the workflow item.',
+    },
+    {
+      displayName: 'Label',
+      name: 'label',
+      type: 'string',
+      required: true,
+      default: '',
+      description: 'Text shown next to the input on the served page.',
+    },
+    {
+      displayName: 'Type',
+      name: 'type',
+      type: 'options',
+      default: 'text',
+      options: FIELD_TYPE_OPTIONS,
+      description: 'Kind of input shown to the visitor.',
+    },
+    {
+      displayName: 'Required',
+      name: 'required',
+      type: 'boolean',
+      default: false,
+      description: 'Whether the field must be filled in before submitting.',
+    },
+    {
+      displayName: 'Max Length',
+      name: 'maxLength',
+      type: 'number',
+      default: '',
+      description:
+        'Maximum number of characters accepted. Leave empty for no limit.',
+      displayOptions: { show: { type: ['text', 'textarea'] } },
+    },
+    {
+      displayName: 'Minimum',
+      name: 'min',
+      type: 'number',
+      default: '',
+      description: 'Inclusive lower bound. Leave empty for no bound.',
+      displayOptions: { show: { type: ['number'] } },
+    },
+    {
+      displayName: 'Maximum',
+      name: 'max',
+      type: 'number',
+      default: '',
+      description: 'Inclusive upper bound. Leave empty for no bound.',
+      displayOptions: { show: { type: ['number'] } },
+    },
+    {
+      displayName: 'Minimum Date',
+      name: 'minDate',
+      type: 'string',
+      default: '',
+      placeholder: 'YYYY-MM-DD',
+      description: 'Inclusive lower bound as an ISO date. Leave empty for no bound.',
+      displayOptions: { show: { type: ['date'] } },
+    },
+    {
+      displayName: 'Maximum Date',
+      name: 'maxDate',
+      type: 'string',
+      default: '',
+      placeholder: 'YYYY-MM-DD',
+      description: 'Inclusive upper bound as an ISO date. Leave empty for no bound.',
+      displayOptions: { show: { type: ['date'] } },
+    },
+    {
+      displayName: 'Choices',
+      name: 'choices',
+      type: 'multiOptions',
+      default: [],
+      description: 'Values the visitor can choose from.',
+      displayOptions: { show: { type: ['select', 'multiselect'] } },
+    },
+  ];
+}
+
+/**
+ * The node-UI form builder: authors add, edit, reorder, and remove Fields
+ * directly in this editable collection parameter.
+ */
+export const FIELDS_PROPERTY: INodeProperties = {
+  displayName: 'Fields',
+  name: 'fields',
+  type: 'fixedCollection',
+  default: DEFAULT_FIELDS_VALUE,
+  placeholder: 'Add Field',
+  typeOptions: {
+    multipleValues: true,
+    sortButtonEnabled: true,
+    collectionName: 'field',
+  },
+  options: [
+    {
+      displayName: 'Field',
+      name: 'field',
+      values: fieldEntryValues(),
+    },
+  ],
+};
+
 /**
  * Serve the JSON Form page on webhook GET and receive its submissions on POST.
  *
  * Optional Basic Auth / Header Auth credentials gate every request (standard
- * n8n webhook authentication; `none` keeps the form anonymous). A non-empty
- * Import Config parameter is transpiled into Fields and replaces the
- * builder-defined Fields at resolution time. POST is validated server-side
- * with the same Form Definition seam that compiled the served page (defense
- * in depth), shaped into one flat trigger item, and emitted for n8n core to
- * answer per the selected Response Mode.
+ * n8n webhook authentication; `none` keeps the form anonymous). The served
+ * Form comes from the Fields built in the node UI through the Form Definition
+ * module (compile on GET); a non-empty Import Config replaces those builder
+ * Fields wholesale. POST is validated server-side against the same Form
+ * (defense in depth), shaped into one flat trigger item, and emitted for n8n
+ * core to answer per the selected Response Mode. An invalid Field
+ * configuration fails fast with a node error naming the offending field and
+ * rule; an invalid imported document is explained instead of served.
  */
 export async function handleJsonFormWebhook(
   context: IWebhookFunctions,
@@ -64,11 +199,10 @@ export async function handleJsonFormWebhook(
     const accentColor = typeof accentParameter === 'string' ? accentParameter.trim() : '';
 
     try {
-      // Transpile → effective Field list → compiled page config. An imported
-      // document replaces builder Fields wholesale; it is never merged.
-      const form = resolveEffectiveForm(context.getNodeParameter('importConfig', ''));
+      // Builder Fields are the base; an imported document replaces them
+      // wholesale (it is never merged).
       const pageConfig = {
-        ...compileForm(form),
+        ...compileForm(resolveRequestForm(context)),
         completionMessage,
         // Only include Accent Color when set so the served blob stays
         // byte-identical to before for stock-themed forms.
@@ -78,13 +212,16 @@ export async function handleJsonFormWebhook(
       res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
       res.end(page.body);
     } catch (error) {
-      if (!(error instanceof ConfigImportError)) throw error;
-      const errorPage = buildErrorResponse(
-        'Invalid form configuration',
-        `The imported form document was rejected:\n\n${error.message}`,
-      );
-      res.writeHead(errorPage.statusCode, { 'Content-Type': errorPage.contentType });
-      res.end(errorPage.body);
+      if (error instanceof ConfigImportError) {
+        const errorPage = buildErrorResponse(
+          'Invalid form configuration',
+          `The imported form document was rejected:\n\n${error.message}`,
+        );
+        res.writeHead(errorPage.statusCode, { 'Content-Type': errorPage.contentType });
+        res.end(errorPage.body);
+        return { noWebhookResponse: true };
+      }
+      throw toConfigError(context, error);
     }
     return { noWebhookResponse: true };
   }
@@ -92,18 +229,19 @@ export async function handleJsonFormWebhook(
   if (method === 'POST') {
     let submission: Submission;
     try {
-      const form = resolveEffectiveForm(context.getNodeParameter('importConfig', ''));
-      submission = shapeSubmission(form, context.getBodyData());
+      submission = shapeSubmission(resolveRequestForm(context), context.getBodyData());
     } catch (error) {
       if (error instanceof ConfigImportError) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
         return { noWebhookResponse: true };
       }
-      if (!(error instanceof SubmissionShapeError)) throw error;
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message, issues: error.issues }));
-      return { noWebhookResponse: true };
+      if (error instanceof SubmissionShapeError) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message, issues: error.issues }));
+        return { noWebhookResponse: true };
+      }
+      throw toConfigError(context, error);
     }
 
     const items: INodeExecutionData[] = [
@@ -123,6 +261,48 @@ export async function handleJsonFormWebhook(
   res.writeHead(405, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: `Method ${method} is not allowed.` }));
   return { noWebhookResponse: true };
+}
+
+/**
+ * The Form this request serves or validates against: an imported document
+ * replaces builder Fields wholesale and is answered even when the builder is
+ * untouched; otherwise the Fields built in the node UI are required.
+ */
+function resolveRequestForm(context: IWebhookFunctions): Form {
+  const importConfig = context.getNodeParameter('importConfig', '');
+  if (typeof importConfig === 'string' && importConfig.trim() !== '') {
+    return resolveEffectiveForm(EMPTY_BUILDER_FORM, importConfig);
+  }
+  return builtForm(context);
+}
+
+/** Build the Form configured in the node UI's Fields collection. */
+function builtForm(context: IWebhookFunctions): Form {
+  const form = buildFormFromParameters({
+    formTitle: context.getNodeParameter('formTitle', ''),
+    formDescription: context.getNodeParameter('formDescription', ''),
+    fields: context.getNodeParameter('fields', DEFAULT_FIELDS_VALUE),
+  });
+  if (form.fields.length === 0) {
+    throw new NodeOperationError(
+      context.getNode(),
+      'No Fields configured. Add at least one Field to the Fields collection so the form has something to ask.',
+    );
+  }
+  return form;
+}
+
+/**
+ * Surface invalid Field configurations (name rules, constraint sanity) as
+ * node errors so they show up on the node while authoring — before any page
+ * is served or submission accepted.
+ */
+function toConfigError(context: IWebhookFunctions, error: unknown): unknown {
+  if (error instanceof NodeOperationError) return error;
+  if (error instanceof Error) {
+    return new NodeOperationError(context.getNode(), error.message);
+  }
+  return error;
 }
 
 export class JsonForm implements INodeType {
@@ -203,6 +383,23 @@ export class JsonForm implements INodeType {
         ],
         default: 'none',
         description: 'Whether opening the page and submitting the form require authentication.',
+      },
+      FIELDS_PROPERTY,
+      {
+        displayName: 'Title',
+        name: 'formTitle',
+        type: 'string',
+        default: '',
+        placeholder: 'e.g. Contact us',
+        description: 'Optional heading shown at the top of the served page.',
+      },
+      {
+        displayName: 'Description',
+        name: 'formDescription',
+        type: 'string',
+        default: '',
+        typeOptions: { rows: 2 },
+        description: 'Optional text shown under the title on the served page.',
       },
       {
         displayName: 'Response Mode',

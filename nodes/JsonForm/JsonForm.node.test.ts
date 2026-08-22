@@ -1,9 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { sampleFormConfig } from './sampleForm';
+import { NodeOperationError } from 'n8n-workflow';
+
 import { JsonForm } from './JsonForm.node';
 
-/** An import document replacing the fixture Form in the tests below. */
+/** An import document replacing builder Fields in the tests below. */
 const importedDoc = JSON.stringify({
   schema: {
     type: 'object',
@@ -32,6 +33,30 @@ const nestedDoc = JSON.stringify({
   },
   uiSchema: { type: 'VerticalLayout', elements: [] },
 });
+
+/** A builder configuration mirroring the classic sample form. */
+const BUILT_FIELDS = {
+  field: [
+    { name: 'name', label: 'Full name', type: 'text', required: true, maxLength: 100 },
+    { name: 'email', label: 'Email', type: 'text', required: true, maxLength: 254 },
+    {
+      name: 'role',
+      label: 'Role',
+      type: 'select',
+      choices: ['Developer', 'Designer', 'Manager'],
+    },
+    { name: 'startDate', label: 'Start date', type: 'date' },
+    { name: 'newsletter', label: 'Subscribe to the newsletter', type: 'boolean' },
+  ],
+};
+
+const VALID_BODY = {
+  name: 'Ada Lovelace',
+  email: 'ada@example.com',
+  role: 'Developer',
+  startDate: '2026-09-01',
+  newsletter: true,
+};
 
 type FakeRes = {
   statusCode?: number;
@@ -68,20 +93,42 @@ describe('buildFormPageResponse', () => {
     const template =
       '<html><body><script type="application/json" id="jsonform-config">{}</script></body></html>';
 
-    const response = buildFormPageResponse(sampleFormConfig, () => template);
+    const response = buildFormPageResponse(
+      { schema: { type: 'object' }, uiSchema: { type: 'VerticalLayout', elements: [] } },
+      () => template,
+    );
 
     expect(response.statusCode).toBe(200);
     expect(response.contentType).toBe('text/html; charset=utf-8');
     expect(response.body).toContain('id="jsonform-config"');
-    expect(response.body).toContain('"required":["name","email"]');
   });
 });
 
 describe('JsonForm node description', () => {
-  it('exposes n8n\'s standard Response Mode options with When Last Node Finishes as default', () => {
-    const description = new JsonForm().description;
-    const responseMode = description.properties.find((property) => property.name === 'responseMode');
-    if (!responseMode) throw new Error('responseMode property must exist');
+  const description = new JsonForm().description;
+
+  function findProperty(name: string) {
+    const property = description.properties.find((candidate) => candidate.name === name);
+    if (!property) throw new Error(`${name} property must exist`);
+    return property;
+  }
+
+  function entryValues(): Array<Record<string, unknown>> {
+    const fields = findProperty('fields');
+    const collection = (
+      'options' in fields && Array.isArray(fields.options) ? fields.options : []
+    )[0] as { values?: Array<Record<string, unknown>> };
+    return collection.values ?? [];
+  }
+
+  function entryProperty(name: string): Record<string, unknown> {
+    const property = entryValues().find((value) => value.name === name);
+    if (!property) throw new Error(`Field entry property "${name}" must exist`);
+    return property;
+  }
+
+  it("exposes n8n's standard Response Mode options with When Last Node Finishes as default", () => {
+    const responseMode = findProperty('responseMode');
 
     expect(responseMode).toMatchObject({ type: 'options', default: 'lastNode' });
     const options = (
@@ -101,12 +148,8 @@ describe('JsonForm node description', () => {
     ]);
   });
 
-  it('exposes n8n\'s standard Authentication options with None as default', () => {
-    const description = new JsonForm().description;
-    const authentication = description.properties.find(
-      (property) => property.name === 'authentication',
-    );
-    if (!authentication) throw new Error('authentication property must exist');
+  it("exposes n8n's standard Authentication options with None as default", () => {
+    const authentication = findProperty('authentication');
 
     expect(authentication).toMatchObject({ type: 'options', default: 'none' });
     const options = (
@@ -119,8 +162,6 @@ describe('JsonForm node description', () => {
   });
 
   it('wires the matching n8n credential type for each non-none authentication option', () => {
-    const description = new JsonForm().description;
-
     expect(description.credentials).toEqual([
       {
         name: 'httpBasicAuth',
@@ -135,10 +176,12 @@ describe('JsonForm node description', () => {
     ]);
   });
 
+  it('exposes an Import Config parameter that overrides builder Fields when non-empty', () => {
+    expect(findProperty('importConfig')).toBeDefined();
+  });
+
   it('resolves the POST webhook response mode from the node parameter at request time', () => {
-    const postWebhook = new JsonForm().description.webhooks?.find(
-      (webhook) => webhook.httpMethod === 'POST',
-    );
+    const postWebhook = description.webhooks?.find((webhook) => webhook.httpMethod === 'POST');
 
     // Standard trigger mechanics: n8n core evaluates this registration
     // expression per request, so test and production URLs behave alike.
@@ -146,11 +189,66 @@ describe('JsonForm node description', () => {
   });
 
   it('keeps GET registered as onReceived because the page is answered directly', () => {
-    const getWebhook = new JsonForm().description.webhooks?.find(
-      (webhook) => webhook.httpMethod === 'GET',
-    );
+    const getWebhook = description.webhooks?.find((webhook) => webhook.httpMethod === 'GET');
 
     expect(getWebhook?.responseMode).toBe('onReceived');
+  });
+
+  it('offers Fields as an editable, reorderable collection of field entries', () => {
+    const fields = findProperty('fields');
+
+    expect(fields).toMatchObject({ type: 'fixedCollection', placeholder: 'Add Field' });
+    const typeOptions = fields.typeOptions as Record<string, unknown> | undefined;
+    expect(typeOptions?.multipleValues).toBe(true); // add / edit / remove entries
+    expect(typeOptions?.sortButtonEnabled).toBe(true); // reorder entries
+    expect(fields.default).toEqual({ field: [] });
+  });
+
+  it('exposes name, label, type, and required on every field entry', () => {
+    expect(entryProperty('name')).toMatchObject({ type: 'string', required: true });
+    expect(entryProperty('label')).toMatchObject({ type: 'string', required: true });
+    expect(entryProperty('required')).toMatchObject({ type: 'boolean', default: false });
+    expect(String(entryProperty('name').hint)).toMatch(/submittedAt/);
+  });
+
+  it('offers exactly the v1 field-type vocabulary', () => {
+    const type = entryProperty('type');
+
+    expect(type.type).toBe('options');
+    const options = (type.options ?? []) as Array<{ name: string; value: string }>;
+    expect(options.map((option) => option.value)).toEqual([
+      'text',
+      'textarea',
+      'number',
+      'date',
+      'boolean',
+      'select',
+      'multiselect',
+    ]);
+  });
+
+  it('shows constraints conditionally by field type', () => {
+    const showFor = (property: Record<string, unknown>): string[] => {
+      const displayOptions = property.displayOptions as
+        | { show?: { type?: string[] } }
+        | undefined;
+      return displayOptions?.show?.type ?? [];
+    };
+
+    expect(showFor(entryProperty('maxLength'))).toEqual(['text', 'textarea']);
+    expect(showFor(entryProperty('min'))).toEqual(['number']);
+    expect(showFor(entryProperty('max'))).toEqual(['number']);
+    expect(showFor(entryProperty('minDate'))).toEqual(['date']);
+    expect(showFor(entryProperty('maxDate'))).toEqual(['date']);
+    expect(showFor(entryProperty('choices'))).toEqual(['select', 'multiselect']);
+  });
+
+  it('documents the design-time name rules on the Name input', () => {
+    const hint = String(entryProperty('name').hint);
+
+    expect(hint).toMatch(/\^?\[A-Za-z_\]/); // identifier pattern
+    expect(hint).toMatch(/unique/i);
+    expect(hint).toMatch(/submittedAt/);
   });
 });
 
@@ -167,6 +265,7 @@ describe('JsonForm webhook', () => {
     method: string;
     body?: unknown;
     parameters?: Record<string, unknown>;
+    query?: Record<string, string>;
     headers?: Record<string, string>;
     credentials?: Record<string, unknown> | Error;
   }
@@ -175,13 +274,17 @@ describe('JsonForm webhook', () => {
     method,
     body = {},
     parameters = {},
+    query,
     headers = {},
     credentials = {},
   }: SetupOptions) {
     const node = new JsonForm();
     const res = fakeRes();
+    // Tests that do not care about configuration still get a valid built
+    // Form; explicit entries below always win over this default.
+    const effectiveParameters: Record<string, unknown> = { fields: BUILT_FIELDS, ...parameters };
     const context = {
-      getRequestObject: vi.fn(() => ({ method })),
+      getRequestObject: vi.fn(() => ({ method, query })),
       getResponseObject: vi.fn(() => res),
       getBodyData: vi.fn(() => body),
       getHeaderData: vi.fn(() => headers),
@@ -193,32 +296,74 @@ describe('JsonForm webhook', () => {
         return credentials[type];
       }),
       getNodeParameter: vi.fn((name: string, fallback?: unknown) =>
-        name in parameters ? parameters[name] : fallback,
+        name in effectiveParameters ? effectiveParameters[name] : fallback,
       ),
+      getNode: vi.fn(() => ({ name: 'JSON Form', typeVersion: 1, type: 'n8n-nodes-jsonform.jsonForm' })),
     };
 
     const result = await node.webhook.call(context as never);
     return { result, res };
   }
 
-  it('GET serves the form page as text/html with the configuration and completion message injected', async () => {
-    const { result, res } = await setup({
+  /** Extract and parse the configuration blob out of a served page. */
+  function parseServedConfig(html: string): Record<string, unknown> {
+    const match = html.match(
+      /<script type="application\/json" id="jsonform-config">([\s\S]*?)<\/script>/,
+    );
+    if (!match?.[1]) throw new Error('No configuration blob found in served page');
+    return JSON.parse(match[1]) as Record<string, unknown>;
+  }
+
+  it('GET serves a form generated from the built Fields instead of any fixture', async () => {
+    const { res } = await setup({
       method: 'GET',
-      parameters: { completionMessage: 'Custom thanks!' },
+      parameters: {
+        formTitle: 'Feedback',
+        completionMessage: 'Custom thanks!',
+        fields: {
+          field: [
+            { name: 'favorite_color', label: 'Favorite color', type: 'text', required: true },
+            { name: '_private_note', label: 'Private note', type: 'textarea', maxLength: 30 },
+          ],
+        },
+      },
     });
 
-    expect(result?.noWebhookResponse).toBe(true);
     expect(res.statusCode).toBe(200);
     expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
-    expect(res.body).toContain('<title>Form</title>');
-    expect(res.body).toContain('"required":["name","email"]');
-    expect(res.body).toContain('"completionMessage":"Custom thanks!"');
+    expect(res.body).not.toMatch(/sample/i);
+
+    const config = parseServedConfig(res.body);
+    const schema = config.schema as Record<string, unknown>;
+    expect(schema.required).toEqual(['favorite_color']);
+
+    const uiSchema = config.uiSchema as { elements: Array<{ scope: string }> };
+    expect(uiSchema.elements.map((element) => element.scope)).toEqual([
+      '#/properties/favorite_color',
+      '#/properties/_private_note',
+    ]);
+    expect(config.completionMessage).toBe('Custom thanks!');
   });
 
-  it('exposes an Import Config parameter that overrides builder Fields when non-empty', () => {
-    const description = new JsonForm().description;
-    const importConfig = description.properties.find((property) => property.name === 'importConfig');
-    expect(importConfig).toBeDefined();
+  it('round-trips a built Form: render -> fill -> submit -> correct item shape', async () => {
+    const rendered = await setup({ method: 'GET' });
+    const served = parseServedConfig(rendered.res.body);
+    const schema = served.schema as { required?: string[] };
+    expect(schema.required).toEqual(['name', 'email']);
+
+    const posted = await setup({
+      method: 'POST',
+      body: { ...VALID_BODY, utm: 'ignored' },
+    });
+    const items = posted.result?.workflowData?.[0];
+    expect(items).toHaveLength(1);
+
+    const json = items?.[0]?.json as Record<string, unknown>;
+    expect(new Date(json.submittedAt as string).getTime()).not.toBeNaN();
+    expect(Object.keys(json)).toEqual(['submittedAt', 'name', 'email', 'role', 'startDate', 'newsletter']);
+    expect(json.name).toBe('Ada Lovelace');
+    expect(json.role).toBe('Developer');
+    expect(json.newsletter).toBe(true);
   });
 
   it('GET flows a configured Accent Color into the config blob', async () => {
@@ -235,15 +380,71 @@ describe('JsonForm webhook', () => {
 
     expect(res.body).not.toContain('"accentColor"');
   });
+
+  describe('design-time validation of built Fields', () => {
+    const invalidCases: Array<[string, Record<string, unknown>, RegExp]> = [
+      [
+        'invalid identifier pattern',
+        {
+          fields: {
+            field: [{ name: 'first-name', label: 'First name', type: 'text' }],
+          },
+        },
+        /first-name.*invalid name/i,
+      ],
+      [
+        'duplicate names',
+        {
+          fields: {
+            field: [
+              { name: 'email', label: 'Primary email', type: 'text' },
+              { name: 'email', label: 'Backup email', type: 'text' },
+            ],
+          },
+        },
+        /duplicates the name "email"/i,
+      ],
+      [
+        'reserved submittedAt',
+        {
+          fields: {
+            field: [{ name: 'submittedAt', label: 'When', type: 'text' }],
+          },
+        },
+        /reserved name "submittedAt"/i,
+      ],
+    ];
+
+    for (const [label, parameters, errorMatch] of invalidCases) {
+      it(`fails fast on ${label} when serving the page (GET)`, async () => {
+        await expect(setup({ method: 'GET', parameters })).rejects.toThrow(NodeOperationError);
+        await expect(setup({ method: 'GET', parameters })).rejects.toThrow(errorMatch);
+      });
+
+      it(`fails fast on ${label} when receiving submissions (POST)`, async () => {
+        await expect(setup({ method: 'POST', parameters })).rejects.toThrow(NodeOperationError);
+        await expect(setup({ method: 'POST', parameters })).rejects.toThrow(errorMatch);
+      });
+    }
+
+    it('fails fast when no Fields are configured', async () => {
+      await expect(
+        setup({ method: 'GET', parameters: { fields: { field: [] } } }),
+      ).rejects.toThrow(/at least one field/i);
+      await expect(
+        setup({ method: 'POST', parameters: { fields: { field: [] } } }),
+      ).rejects.toThrow(/at least one field/i);
+    });
+  });
+
   describe('import config', () => {
-    it('GET serves a form compiled from the imported document instead of the fixture', async () => {
+    it('GET serves a form compiled from the imported document instead of the built Fields', async () => {
       const { res } = await setup({ method: 'GET', parameters: { importConfig: importedDoc } });
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toContain('"Imported form"');
       expect(res.body).toContain('"required":["email"]');
-      // Fixture fields are replaced, never merged.
-      expect(res.body).not.toContain('Sample form');
+      // Built Fields are replaced, never merged.
       expect(res.body).not.toContain('#/properties/name');
     });
 
@@ -278,14 +479,14 @@ describe('JsonForm webhook', () => {
       expect(json.email).toBe('ada@example.com');
       expect(json.plan).toBe('pro');
 
-      // The fixture's fields are gone: its required values are not demanded
-      // and its name field is no longer accepted.
-      const fixtureOnly = await setup({
+      // The built Fields are gone: their required values are not demanded
+      // and their name field is no longer accepted.
+      const withBuilderOnly = await setup({
         method: 'POST',
         body: { email: 'ada@example.com', plan: 'pro', name: 'Ada' },
         parameters: { importConfig: importedDoc },
       });
-      const shaped = fixtureOnly.result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
+      const shaped = withBuilderOnly.result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
       expect(shaped.name).toBeUndefined();
     });
 
@@ -315,17 +516,9 @@ describe('JsonForm webhook', () => {
     });
   });
 
-  const validBody = {
-    name: 'Ada Lovelace',
-    email: 'ada@example.com',
-    role: 'Developer',
-    startDate: '2026-09-01',
-    newsletter: true,
-  };
-
   describe('valid POST', () => {
     it('emits exactly one workflow item with flat field values plus submittedAt', async () => {
-      const { result } = await setup({ method: 'POST', body: validBody });
+      const { result } = await setup({ method: 'POST', body: VALID_BODY });
 
       const items = result?.workflowData?.[0];
       expect(items).toHaveLength(1);
@@ -341,7 +534,11 @@ describe('JsonForm webhook', () => {
     });
 
     it('drops query parameters from the emitted item', async () => {
-      const { result } = await setup({ method: 'POST', body: validBody });
+      const { result } = await setup({
+        method: 'POST',
+        body: VALID_BODY,
+        query: { utm: 'campaign' },
+      });
       const json = result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
 
       expect(json.utm).toBeUndefined();
@@ -355,10 +552,10 @@ describe('JsonForm webhook', () => {
       ]);
     });
 
-    it('drops unknown payload keys not defined by the Form', async () => {
+    it('drops unknown payload keys not defined by the built Form', async () => {
       const { result } = await setup({
         method: 'POST',
-        body: { ...validBody, evilKey: '</script>', submittedAt: 'forged' },
+        body: { ...VALID_BODY, evilKey: '</script>', submittedAt: 'forged' },
       });
       const json = result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
 
@@ -370,7 +567,7 @@ describe('JsonForm webhook', () => {
       for (const responseMode of ['onReceived', 'lastNode'] as const) {
         const { result, res } = await setup({
           method: 'POST',
-          body: validBody,
+          body: VALID_BODY,
           parameters: { responseMode },
         });
 
@@ -383,7 +580,7 @@ describe('JsonForm webhook', () => {
     it('leaves the response to the Respond to Webhook node in responseNode mode', async () => {
       const { result } = await setup({
         method: 'POST',
-        body: validBody,
+        body: VALID_BODY,
         parameters: { responseMode: 'responseNode' },
       });
 
@@ -420,113 +617,5 @@ describe('JsonForm webhook', () => {
 
     expect(result?.noWebhookResponse).toBe(true);
     expect(res.statusCode).toBe(405);
-  });
-
-  describe('authenticated webhooks', () => {
-    const basicCredentials = { httpBasicAuth: { user: 'ada', password: 's3cret' } };
-    const basicHeader = `Basic ${Buffer.from('ada:s3cret').toString('base64')}`;
-
-    it('gates the GET page behind Basic Auth and challenges requests without credentials', async () => {
-      const { result, res } = await setup({
-        method: 'GET',
-        parameters: { authentication: 'basicAuth' },
-        credentials: basicCredentials,
-      });
-
-      expect(result?.noWebhookResponse).toBe(true);
-      expect(result?.workflowData).toBeUndefined();
-      expect(res.statusCode).toBe(401);
-      expect(res.headers['WWW-Authenticate']).toContain('Basic realm=');
-      expect(res.headers['Content-Type']).toContain('application/json');
-      const parsed = JSON.parse(res.body) as { error: string };
-      expect(parsed.error).toBeTruthy();
-    });
-
-    it('serves the page on GET once valid Basic Auth credentials are presented', async () => {
-      const { result, res } = await setup({
-        method: 'GET',
-        parameters: { authentication: 'basicAuth' },
-        headers: { authorization: basicHeader },
-        credentials: basicCredentials,
-      });
-
-      expect(result?.noWebhookResponse).toBe(true);
-      expect(res.statusCode).toBe(200);
-      expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
-      expect(res.body).toContain('<title>Form</title>');
-    });
-
-    it('rejects POST submissions failing Header Auth with 401 and emits nothing', async () => {
-      const { result, res } = await setup({
-        method: 'POST',
-        body: validBody,
-        parameters: { authentication: 'headerAuth' },
-        headers: { 'x-api-key': 'tampered' },
-        credentials: { httpHeaderAuth: { name: 'X-Api-Key', value: 'secret-value' } },
-      });
-
-      expect(result?.workflowData).toBeUndefined();
-      expect(result?.noWebhookResponse).toBe(true);
-      expect(res.statusCode).toBe(401);
-      // A Basic challenge would be meaningless on a Header Auth form.
-      expect(res.headers['WWW-Authenticate']).toBeUndefined();
-    });
-
-    it('answers a misconfigured credential with the same flat 401 as any other denial', async () => {
-      const { result, res } = await setup({
-        method: 'POST',
-        body: validBody,
-        parameters: { authentication: 'basicAuth' },
-        headers: { authorization: basicHeader },
-      });
-
-      expect(result?.workflowData).toBeUndefined();
-      expect(res.statusCode).toBe(401);
-      const parsed = JSON.parse(res.body) as { error: string };
-      expect(parsed.error).toMatch(/no authentication data defined/i);
-    });
-
-    it('accepts POST submissions presenting the configured Header Auth value', async () => {
-      const { result, res } = await setup({
-        method: 'POST',
-        body: validBody,
-        parameters: { authentication: 'headerAuth' },
-        headers: { 'x-api-key': 'secret-value' },
-        credentials: { httpHeaderAuth: { name: 'X-Api-Key', value: 'secret-value' } },
-      });
-
-      expect(res.writeHeadCalls).toBe(0);
-      expect(result?.workflowData?.[0]).toHaveLength(1);
-    });
-
-    it('checks credentials before validating the submission body', async () => {
-      const { res } = await setup({
-        method: 'POST',
-        body: { name: 'Ada' },
-        parameters: { authentication: 'basicAuth' },
-        headers: { authorization: `Basic ${Buffer.from('ada:wrong').toString('base64')}` },
-        credentials: basicCredentials,
-      });
-
-      expect(res.statusCode).toBe(401);
-    });
-
-    it('keeps the form anonymous end-to-end when Authentication is none', async () => {
-      for (const method of ['GET', 'POST'] as const) {
-        const { result, res } = await setup({
-          method,
-          body: validBody,
-          parameters: { authentication: 'none' },
-        });
-
-        if (method === 'GET') {
-          expect(res.statusCode).toBe(200);
-          expect(result?.workflowData).toBeUndefined();
-        } else {
-          expect(res.writeHeadCalls).toBe(0);
-          expect(result?.workflowData?.[0]).toHaveLength(1);
-        }
-      }
-    });
   });
 });

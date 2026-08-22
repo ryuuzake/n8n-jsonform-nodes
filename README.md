@@ -16,6 +16,19 @@ n8n community node package (npm: `n8n-nodes-jsonform`) that serves **JSONForms-b
 - `GET <webhook-url>` renders the form; `POST` submits it into your workflow as the trigger item.
 - **Authentication** (optional): gate the webhook with n8n's standard **Basic Auth** or **Header Auth** credentials — page serving and submissions are both protected, unauthorized callers get a `401`. Defaults to **None** so public intake forms work anonymously out of the box.
 
+## Building a form in the node
+
+Fields are configured directly in the node's editable **Fields** collection (add, edit, reorder, remove). Every field has:
+
+- **Name** — the key this field gets in the workflow item. Must match `^[A-Za-z_][A-Za-z0-9_]*$`, be unique within the form, and cannot be the reserved name `submittedAt`. Violations surface as node errors naming the offending field.
+- **Label** — text shown next to the input on the page.
+- **Type** — one of `text`, `textarea`, `number`, `date`, `boolean` (switch), `select`, or `multiselect`.
+- **Required** — whether the field must be filled in.
+
+Type-appropriate constraints appear automatically: **Max Length** for text/long text, **Minimum/Maximum** for numbers, **Minimum Date/Maximum Date** for dates, and **Choices** for dropdowns and multi-selects.
+
+The served schema is generated from these fields at request time through the Form Definition module; submissions are validated server-side against the same fields before they reach your workflow as one flat item plus `submittedAt`.
+
 ## Install
 
 ### Local development / testing
