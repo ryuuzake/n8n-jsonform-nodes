@@ -71,6 +71,40 @@ describe('JsonForm node description', () => {
     ]);
   });
 
+  it('exposes n8n\'s standard Authentication options with None as default', () => {
+    const description = new JsonForm().description;
+    const authentication = description.properties.find(
+      (property) => property.name === 'authentication',
+    );
+    if (!authentication) throw new Error('authentication property must exist');
+
+    expect(authentication).toMatchObject({ type: 'options', default: 'none' });
+    const options = (
+      'options' in authentication && Array.isArray(authentication.options)
+        ? authentication.options
+        : []
+    ) as Array<{ value: string; name: string }>;
+    expect(options.map((option) => option.value)).toEqual(['basicAuth', 'headerAuth', 'none']);
+    expect(options.map((option) => option.name)).toEqual(['Basic Auth', 'Header Auth', 'None']);
+  });
+
+  it('wires the matching n8n credential type for each non-none authentication option', () => {
+    const description = new JsonForm().description;
+
+    expect(description.credentials).toEqual([
+      {
+        name: 'httpBasicAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['basicAuth'] } },
+      },
+      {
+        name: 'httpHeaderAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['headerAuth'] } },
+      },
+    ]);
+  });
+
   it('resolves the POST webhook response mode from the node parameter at request time', () => {
     const postWebhook = new JsonForm().description.webhooks?.find(
       (webhook) => webhook.httpMethod === 'POST',
@@ -103,15 +137,31 @@ describe('JsonForm webhook', () => {
     method: string;
     body?: unknown;
     parameters?: Record<string, unknown>;
+    headers?: Record<string, string>;
+    credentials?: Record<string, unknown> | Error;
   }
 
-  async function setup({ method, body = {}, parameters = {} }: SetupOptions) {
+  async function setup({
+    method,
+    body = {},
+    parameters = {},
+    headers = {},
+    credentials = {},
+  }: SetupOptions) {
     const node = new JsonForm();
     const res = fakeRes();
     const context = {
       getRequestObject: vi.fn(() => ({ method })),
       getResponseObject: vi.fn(() => res),
       getBodyData: vi.fn(() => body),
+      getHeaderData: vi.fn(() => headers),
+      getCredentials: vi.fn(async (type: string) => {
+        if (credentials instanceof Error) throw credentials;
+        if (!(type in credentials)) {
+          throw new Error(`No credential of type "${type}" is selected on the node.`);
+        }
+        return credentials[type];
+      }),
       getNodeParameter: vi.fn((name: string, fallback?: unknown) =>
         name in parameters ? parameters[name] : fallback,
       ),
@@ -135,15 +185,15 @@ describe('JsonForm webhook', () => {
     expect(res.body).toContain('"completionMessage":"Custom thanks!"');
   });
 
-  describe('valid POST', () => {
-    const validBody = {
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
-      role: 'Developer',
-      startDate: '2026-09-01',
-      newsletter: true,
-    };
+  const validBody = {
+    name: 'Ada Lovelace',
+    email: 'ada@example.com',
+    role: 'Developer',
+    startDate: '2026-09-01',
+    newsletter: true,
+  };
 
+  describe('valid POST', () => {
     it('emits exactly one workflow item with flat field values plus submittedAt', async () => {
       const { result } = await setup({ method: 'POST', body: validBody });
 
@@ -240,5 +290,97 @@ describe('JsonForm webhook', () => {
 
     expect(result?.noWebhookResponse).toBe(true);
     expect(res.statusCode).toBe(405);
+  });
+
+  describe('authenticated webhooks', () => {
+    const basicCredentials = { httpBasicAuth: { user: 'ada', password: 's3cret' } };
+    const basicHeader = `Basic ${Buffer.from('ada:s3cret').toString('base64')}`;
+
+    it('gates the GET page behind Basic Auth and challenges requests without credentials', async () => {
+      const { result, res } = await setup({
+        method: 'GET',
+        parameters: { authentication: 'basicAuth' },
+        credentials: basicCredentials,
+      });
+
+      expect(result?.noWebhookResponse).toBe(true);
+      expect(result?.workflowData).toBeUndefined();
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['WWW-Authenticate']).toContain('Basic realm=');
+      expect(res.headers['Content-Type']).toContain('application/json');
+      const parsed = JSON.parse(res.body) as { error: string };
+      expect(parsed.error).toBeTruthy();
+    });
+
+    it('serves the page on GET once valid Basic Auth credentials are presented', async () => {
+      const { result, res } = await setup({
+        method: 'GET',
+        parameters: { authentication: 'basicAuth' },
+        headers: { authorization: basicHeader },
+        credentials: basicCredentials,
+      });
+
+      expect(result?.noWebhookResponse).toBe(true);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
+      expect(res.body).toContain('<title>Form</title>');
+    });
+
+    it('rejects POST submissions failing Header Auth with 401 and emits nothing', async () => {
+      const { result, res } = await setup({
+        method: 'POST',
+        body: validBody,
+        parameters: { authentication: 'headerAuth' },
+        headers: { 'x-api-key': 'tampered' },
+        credentials: { httpHeaderAuth: { name: 'X-Api-Key', value: 'secret-value' } },
+      });
+
+      expect(result?.workflowData).toBeUndefined();
+      expect(result?.noWebhookResponse).toBe(true);
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('accepts POST submissions presenting the configured Header Auth value', async () => {
+      const { result, res } = await setup({
+        method: 'POST',
+        body: validBody,
+        parameters: { authentication: 'headerAuth' },
+        headers: { 'x-api-key': 'secret-value' },
+        credentials: { httpHeaderAuth: { name: 'X-Api-Key', value: 'secret-value' } },
+      });
+
+      expect(res.writeHeadCalls).toBe(0);
+      expect(result?.workflowData?.[0]).toHaveLength(1);
+    });
+
+    it('checks credentials before validating the submission body', async () => {
+      const { res } = await setup({
+        method: 'POST',
+        body: { name: 'Ada' },
+        parameters: { authentication: 'basicAuth' },
+        headers: { authorization: `Basic ${Buffer.from('ada:wrong').toString('base64')}` },
+        credentials: basicCredentials,
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('keeps the form anonymous end-to-end when Authentication is none', async () => {
+      for (const method of ['GET', 'POST'] as const) {
+        const { result, res } = await setup({
+          method,
+          body: validBody,
+          parameters: { authentication: 'none' },
+        });
+
+        if (method === 'GET') {
+          expect(res.statusCode).toBe(200);
+          expect(result?.workflowData).toBeUndefined();
+        } else {
+          expect(res.writeHeadCalls).toBe(0);
+          expect(result?.workflowData?.[0]).toHaveLength(1);
+        }
+      }
+    });
   });
 });

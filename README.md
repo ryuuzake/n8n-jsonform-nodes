@@ -13,6 +13,7 @@ n8n community node package (npm: `n8n-nodes-jsonform`) that serves **JSONForms-b
   - **Import JSON config** — paste a `{ schema, uiSchema }` file (or fetch it from a URL at runtime), or
   - **Node UI builder** — add fields directly in the node parameters; the schema is generated for you.
 - `GET <webhook-url>` renders the form; `POST` submits it into your workflow as the trigger item.
+- **Authentication** (optional): gate the webhook with n8n's standard **Basic Auth** or **Header Auth** credentials — page serving and submissions are both protected, unauthorized callers get a `401`. Defaults to **None** so public intake forms work anonymously out of the box.
 
 ## Install
 
