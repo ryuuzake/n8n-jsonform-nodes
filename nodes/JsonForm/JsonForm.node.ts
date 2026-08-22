@@ -36,14 +36,19 @@ export async function handleJsonFormWebhook(
   // Standard n8n webhook authorization: the selected credentials gate every
   // request (page serving and submissions alike) before anything runs, so an
   // unauthorized caller gets a 401 challenge instead of a workflow execution.
+  // Like n8n's own FormTrigger, every authorization failure — including a
+  // misconfigured credential — answers a uniform 401 so callers cannot probe
+  // how the node is set up. The Basic challenge header is only sent when
+  // Basic Auth actually protects the form.
   try {
     await validateWebhookAuthentication(context);
   } catch (error) {
     if (!(error instanceof WebhookAuthorizationError)) throw error;
-    res.writeHead(401, {
-      'Content-Type': 'application/json',
-      'WWW-Authenticate': 'Basic realm="Enter credentials"',
-    });
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if ((context.getNodeParameter('authentication', 'none') as string) === 'basicAuth') {
+      headers['WWW-Authenticate'] = 'Basic realm="Enter credentials"';
+    }
+    res.writeHead(401, headers);
     res.end(JSON.stringify({ error: error.message }));
     return { noWebhookResponse: true };
   }

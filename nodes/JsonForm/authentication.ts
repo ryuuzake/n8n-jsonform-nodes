@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import type { IWebhookFunctions } from 'n8n-workflow';
 
 /**
@@ -56,9 +58,39 @@ export function parseBasicAuth(header: string | string[] | undefined): ParsedBas
 
 type HeaderMap = Record<string, string | string[] | undefined>;
 
+interface BasicAuthCredential {
+  user?: unknown;
+  password?: unknown;
+}
+
+interface HeaderAuthCredential {
+  name?: unknown;
+  value?: unknown;
+}
+
 function firstHeaderValue(headers: HeaderMap, name: string): string | undefined {
   const value = headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
+}
+
+/** Loads the node's credential of the given type, or undefined when none is selected. */
+async function loadCredential<T extends object>(
+  context: IWebhookFunctions,
+  credentialType: string,
+): Promise<T | undefined> {
+  try {
+    return await context.getCredentials<T>(credentialType);
+  } catch {}
+  return undefined;
+}
+
+/** Constant-time secret comparison (length checked first; timingSafeEqual requires equal lengths). */
+function matchesSecret(provided: string, expected: string): boolean {
+  const providedBytes = Buffer.from(provided, 'utf8');
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  return (
+    providedBytes.length === expectedBytes.length && timingSafeEqual(providedBytes, expectedBytes)
+  );
 }
 
 /**
@@ -71,20 +103,15 @@ function firstHeaderValue(headers: HeaderMap, name: string): string | undefined 
  */
 export async function validateWebhookAuthentication(
   context: IWebhookFunctions,
-  authPropertyName: string = 'authentication',
 ): Promise<void> {
-  const authentication = context.getNodeParameter(authPropertyName, 'none') as string;
+  const authentication = context.getNodeParameter('authentication', 'none') as string;
   if (authentication === 'none') return;
 
   const headers = context.getHeaderData() as HeaderMap;
 
   if (authentication === 'basicAuth') {
-    let expectedAuth: Record<string, unknown> | undefined;
-    try {
-      expectedAuth = await context.getCredentials<Record<string, unknown>>('httpBasicAuth');
-    } catch {}
-
-    if (expectedAuth === undefined || !expectedAuth.user || !expectedAuth.password) {
+    const expectedAuth = await loadCredential<BasicAuthCredential>(context, 'httpBasicAuth');
+    if (!expectedAuth?.user || !expectedAuth?.password) {
       // Data is not defined on node so can not authenticate
       throw new WebhookAuthorizationError(500, 'No authentication data defined on node!');
     }
@@ -95,8 +122,8 @@ export async function validateWebhookAuthentication(
       throw new WebhookAuthorizationError(401);
     }
     if (
-      providedAuth.user !== expectedAuth.user ||
-      providedAuth.pass !== expectedAuth.password
+      !matchesSecret(providedAuth.user, String(expectedAuth.user)) ||
+      !matchesSecret(providedAuth.pass, String(expectedAuth.password))
     ) {
       // Provided authentication data is wrong
       throw new WebhookAuthorizationError(401, 'Authentication data is wrong!');
@@ -105,18 +132,14 @@ export async function validateWebhookAuthentication(
   }
 
   if (authentication === 'headerAuth') {
-    let expectedAuth: Record<string, unknown> | undefined;
-    try {
-      expectedAuth = await context.getCredentials<Record<string, unknown>>('httpHeaderAuth');
-    } catch {}
-
-    if (expectedAuth === undefined || !expectedAuth.name || !expectedAuth.value) {
+    const expectedAuth = await loadCredential<HeaderAuthCredential>(context, 'httpHeaderAuth');
+    if (!expectedAuth?.name || !expectedAuth?.value) {
       // Data is not defined on node so can not authenticate
       throw new WebhookAuthorizationError(500, 'No authentication data defined on node!');
     }
 
-    const providedValue = firstHeaderValue(headers, expectedAuth.name as string);
-    if (providedValue !== expectedAuth.value) {
+    const providedValue = firstHeaderValue(headers, String(expectedAuth.name));
+    if (providedValue === undefined || !matchesSecret(providedValue, String(expectedAuth.value))) {
       // Provided authentication data is missing or wrong
       throw new WebhookAuthorizationError(403);
     }

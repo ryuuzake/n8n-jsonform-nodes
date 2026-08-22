@@ -338,6 +338,22 @@ describe('JsonForm webhook', () => {
       expect(result?.workflowData).toBeUndefined();
       expect(result?.noWebhookResponse).toBe(true);
       expect(res.statusCode).toBe(401);
+      // A Basic challenge would be meaningless on a Header Auth form.
+      expect(res.headers['WWW-Authenticate']).toBeUndefined();
+    });
+
+    it('answers a misconfigured credential with the same flat 401 as any other denial', async () => {
+      const { result, res } = await setup({
+        method: 'POST',
+        body: validBody,
+        parameters: { authentication: 'basicAuth' },
+        headers: { authorization: basicHeader },
+      });
+
+      expect(result?.workflowData).toBeUndefined();
+      expect(res.statusCode).toBe(401);
+      const parsed = JSON.parse(res.body) as { error: string };
+      expect(parsed.error).toMatch(/no authentication data defined/i);
     });
 
     it('accepts POST submissions presenting the configured Header Auth value', async () => {
