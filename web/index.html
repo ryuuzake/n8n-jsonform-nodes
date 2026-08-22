@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Form</title>
+    <script>
+      // Follow the system light/dark preference (stock shadcn theme styling).
+      (() => {
+        const media = window.matchMedia('(prefers-color-scheme: dark)');
+        const apply = () =>
+          document.documentElement.classList.toggle('dark', media.matches);
+        apply();
+        media.addEventListener('change', apply);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!--
+      The Form configuration blob. The n8n node replaces this element's content
+      with the real configuration before serving the page. In standalone dev
+      mode the sample fixture below is used directly.
+      Keep in sync with nodes/JsonForm/sampleForm.ts.
+    -->
+    <script type="application/json" id="jsonform-config">
+      {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "Full name",
+              "description": "Your given name and surname.",
+              "minLength": 2
+            },
+            "email": {
+              "type": "string",
+              "title": "Email",
+              "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+            },
+            "role": {
+              "type": "string",
+              "title": "Role",
+              "enum": ["Developer", "Designer", "Manager"]
+            },
+            "startDate": {
+              "type": "string",
+              "title": "Start date",
+              "format": "date"
+            },
+            "newsletter": {
+              "type": "boolean",
+              "title": "Subscribe to the newsletter",
+              "default": true
+            }
+          },
+          "required": ["name", "email"]
+        },
+        "uiSchema": {
+          "type": "VerticalLayout",
+          "elements": [
+            { "type": "Control", "scope": "#/properties/name" },
+            { "type": "Control", "scope": "#/properties/email" },
+            { "type": "Control", "scope": "#/properties/role" },
+            { "type": "Control", "scope": "#/properties/startDate" },
+            { "type": "Control", "scope": "#/properties/newsletter" }
+          ]
+        }
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

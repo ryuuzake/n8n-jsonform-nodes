@@ -21,9 +21,12 @@
   "main": "dist/nodes/JsonForm/JsonForm.node.js",
   "scripts": {
     "build": "npm run build:web && npm run build:node",
-    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:web": "npm --prefix web install && npm --prefix web run build && node scripts/place-web-bundle.mjs",
     "build:node": "tsc && cp nodes/JsonForm/jsonform.svg nodes/JsonForm/form.html dist/nodes/JsonForm/",
     "dev": "tsc --watch",
+    "dev:web": "npm --prefix web run dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "clean": "rimraf dist && rimraf nodes/JsonForm/form.html"
   },
   "files": [
@@ -38,7 +41,8 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "n8n-workflow": "^1.82.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "n8n-workflow": "*"
