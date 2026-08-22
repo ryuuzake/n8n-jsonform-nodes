@@ -12,17 +12,20 @@ import type { Submission } from '../../src/form-definition';
 
 import { buildFormPageResponse, buildErrorResponse, loadFormTemplate } from './formPage';
 import { ConfigImportError, resolveEffectiveForm } from './effectiveForm';
+import { validateWebhookAuthentication, WebhookAuthorizationError } from './authentication';
 
 export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
 
 /**
  * Serve the JSON Form page on webhook GET and receive its submissions on POST.
  *
- * A non-empty Import Config parameter is transpiled into Fields and replaces
- * the builder-defined Fields at resolution time. POST is validated
- * server-side with the same Form Definition seam that compiled the served
- * page (defense in depth), shaped into one flat trigger item, and emitted for
- * n8n core to answer per the selected Response Mode.
+ * Optional Basic Auth / Header Auth credentials gate every request (standard
+ * n8n webhook authentication; `none` keeps the form anonymous). A non-empty
+ * Import Config parameter is transpiled into Fields and replaces the
+ * builder-defined Fields at resolution time. POST is validated server-side
+ * with the same Form Definition seam that compiled the served page (defense
+ * in depth), shaped into one flat trigger item, and emitted for n8n core to
+ * answer per the selected Response Mode.
  */
 export async function handleJsonFormWebhook(
   context: IWebhookFunctions,
@@ -31,6 +34,26 @@ export async function handleJsonFormWebhook(
   const req = context.getRequestObject();
   const res = context.getResponseObject();
   const method = req.method ?? 'GET';
+
+  // Standard n8n webhook authorization: the selected credentials gate every
+  // request (page serving and submissions alike) before anything runs, so an
+  // unauthorized caller gets a 401 challenge instead of a workflow execution.
+  // Like n8n's own FormTrigger, every authorization failure — including a
+  // misconfigured credential — answers a uniform 401 so callers cannot probe
+  // how the node is set up. The Basic challenge header is only sent when
+  // Basic Auth actually protects the form.
+  try {
+    await validateWebhookAuthentication(context);
+  } catch (error) {
+    if (!(error instanceof WebhookAuthorizationError)) throw error;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if ((context.getNodeParameter('authentication', 'none') as string) === 'basicAuth') {
+      headers['WWW-Authenticate'] = 'Basic realm="Enter credentials"';
+    }
+    res.writeHead(401, headers);
+    res.end(JSON.stringify({ error: error.message }));
+    return { noWebhookResponse: true };
+  }
 
   if (method === 'GET') {
     const completionMessage = context.getNodeParameter(
@@ -116,6 +139,18 @@ export class JsonForm implements INodeType {
     },
     inputs: [],
     outputs: ['main'],
+    credentials: [
+      {
+        name: 'httpBasicAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['basicAuth'] } },
+      },
+      {
+        name: 'httpHeaderAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['headerAuth'] } },
+      },
+    ],
     webhooks: [
       {
         name: 'default',
@@ -143,6 +178,31 @@ export class JsonForm implements INodeType {
         required: true,
         default: 'json-form',
         description: 'The webhook path that serves the form and receives its submissions.',
+      },
+      {
+        displayName: 'Authentication',
+        name: 'authentication',
+        type: 'options',
+        options: [
+          {
+            name: 'Basic Auth',
+            value: 'basicAuth',
+            description: 'Callers must present the user/password of a Basic Auth credential.',
+          },
+          {
+            name: 'Header Auth',
+            value: 'headerAuth',
+            description:
+              'Callers must send the header name/value pair stored in a Header Auth credential.',
+          },
+          {
+            name: 'None',
+            value: 'none',
+            description: 'Anyone with the URL can open the form and submit it anonymously.',
+          },
+        ],
+        default: 'none',
+        description: 'Whether opening the page and submitting the form require authentication.',
       },
       {
         displayName: 'Response Mode',
