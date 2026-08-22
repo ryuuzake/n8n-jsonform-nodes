@@ -171,6 +171,20 @@ describe('JsonForm webhook', () => {
     expect(importConfig).toBeDefined();
   });
 
+  it('GET flows a configured Accent Color into the config blob', async () => {
+    const { res } = await setup({
+      method: 'GET',
+      parameters: { accentColor: '#7c3aed' },
+    });
+
+    expect(res.body).toContain('"accentColor":"#7c3aed"');
+  });
+
+  it('GET omits Accent Color from the config blob when unset so the stock theme is served', async () => {
+    const { res } = await setup({ method: 'GET' });
+
+    expect(res.body).not.toContain('"accentColor"');
+  });
   describe('import config', () => {
     it('GET serves a form compiled from the imported document instead of the fixture', async () => {
       const { res } = await setup({ method: 'GET', parameters: { importConfig: importedDoc } });

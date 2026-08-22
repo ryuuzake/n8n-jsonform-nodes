@@ -37,14 +37,21 @@ export async function handleJsonFormWebhook(
       'completionMessage',
       DEFAULT_COMPLETION_MESSAGE,
     ) as string;
+    const accentParameter = context.getNodeParameter('accentColor', '');
+    const accentColor = typeof accentParameter === 'string' ? accentParameter.trim() : '';
+
     try {
       // Transpile → effective Field list → compiled page config. An imported
       // document replaces builder Fields wholesale; it is never merged.
       const form = resolveEffectiveForm(context.getNodeParameter('importConfig', ''));
-      const page = buildFormPageResponse(
-        { ...compileForm(form), completionMessage },
-        loadTemplate,
-      );
+      const pageConfig = {
+        ...compileForm(form),
+        completionMessage,
+        // Only include Accent Color when set so the served blob stays
+        // byte-identical to before for stock-themed forms.
+        ...(accentColor ? { accentColor } : {}),
+      };
+      const page = buildFormPageResponse(pageConfig, loadTemplate);
       res.writeHead(page.statusCode, { 'Content-Type': page.contentType });
       res.end(page.body);
     } catch (error) {
@@ -175,6 +182,14 @@ export class JsonForm implements INodeType {
         type: 'string',
         default: DEFAULT_COMPLETION_MESSAGE,
         description: 'Shown on the page after a submission was received successfully.',
+      },
+      {
+        displayName: 'Accent Color',
+        name: 'accentColor',
+        type: 'color',
+        default: '',
+        description:
+          'Recolors the form primary theme color (buttons, focus rings). Leave empty for the stock shadcn theme.',
       },
     ],
   };
