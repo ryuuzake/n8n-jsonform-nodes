@@ -4,3 +4,5 @@ web/dist/
 web/components.json.bak
 *.tsbuildinfo
 .DS_Store
+# Generated single-file web bundle (built by `npm run build:web`)
+nodes/JsonForm/form.html

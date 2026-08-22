@@ -21,9 +21,10 @@
   "main": "dist/nodes/JsonForm/JsonForm.node.js",
   "scripts": {
     "build": "npm run build:web && npm run build:node",
-    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:web": "npm --prefix web install && npm --prefix web run build && node scripts/place-web-bundle.mjs",
     "build:node": "tsc -p tsconfig.build.json && cp nodes/JsonForm/jsonform.svg nodes/JsonForm/form.html dist/nodes/JsonForm/",
     "dev": "tsc --watch",
+    "dev:web": "npm --prefix web run dev",
     "clean": "rimraf dist && rimraf nodes/JsonForm/form.html",
     "test": "vitest run",
     "test:watch": "vitest",
