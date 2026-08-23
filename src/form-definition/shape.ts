@@ -39,6 +39,18 @@ function validateValue(field: ResolvedField, value: unknown): SubmissionIssue | 
       if (typeof value !== "string") {
         return fail("invalid-type", `"${field.name}" must be a string.`);
       }
+      // An untouched optional field submits as an empty string; that is
+      // absence, not a too-short answer.
+      if (
+        field.minLength !== undefined &&
+        !isEmptyValue(value) &&
+        value.length < field.minLength
+      ) {
+        return fail(
+          "invalid-constraint",
+          `"${field.name}" must be at least ${field.minLength} characters.`,
+        );
+      }
       if (field.maxLength !== undefined && value.length > field.maxLength) {
         return fail(
           "invalid-constraint",

@@ -27,6 +27,45 @@ describe("compileForm — schema per field type", () => {
     expect(schema.properties).toEqual({ bio: { type: "string", maxLength: 200 } });
   });
 
+  it("honors minLength alongside maxLength on text fields", () => {
+    const { schema, uiSchema } = compileForm(
+      formWith({
+        name: "code",
+        label: "Code",
+        type: "text",
+        minLength: 4,
+        maxLength: 12,
+      }),
+    );
+    expect(schema.properties).toEqual({ code: { type: "string", minLength: 4, maxLength: 12 } });
+    expect(uiSchema.elements[0]).toMatchObject({ scope: "#/properties/code" });
+  });
+
+  it("emits a SHOW rule for a field with a visibility condition", () => {
+    const { uiSchema } = compileForm(
+      formWith(
+        { name: "vegetarian", label: "Vegetarian", type: "boolean" },
+        {
+          name: "favorite_vegetable",
+          label: "Favorite vegetable",
+          type: "select",
+          choices: ["Tomato", "Other"],
+          visibleWhen: { field: "vegetarian", equals: true },
+        },
+      ),
+    );
+
+    expect(uiSchema.elements[1]).toEqual({
+      type: "Control",
+      scope: "#/properties/favorite_vegetable",
+      label: "Favorite vegetable",
+      rule: {
+        effect: "SHOW",
+        condition: { scope: "#/properties/vegetarian", schema: { const: true } },
+      },
+    });
+  });
+
   it("renders textarea as a multi-line control with optional maxLength", () => {
     const { schema, uiSchema } = compileForm(
       formWith({ name: "message", label: "Message", type: "textarea", maxLength: 500 }),

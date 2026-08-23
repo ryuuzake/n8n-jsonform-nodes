@@ -1,5 +1,5 @@
 import { resolveForm } from "./resolve";
-import type { CompiledForm, Form, JsonSchema, ResolvedField } from "./types";
+import type { CompiledForm, FieldVisibility, Form, JsonSchema, ResolvedField } from "./types";
 
 function propertySchema(field: ResolvedField): JsonSchema {
   switch (field.type) {
@@ -7,6 +7,7 @@ function propertySchema(field: ResolvedField): JsonSchema {
     case "textarea":
       return {
         type: "string",
+        ...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
         ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
       };
     case "number":
@@ -35,6 +36,17 @@ function propertySchema(field: ResolvedField): JsonSchema {
   }
 }
 
+/** The JSONForms rule a compiled visibility condition becomes. */
+function visibilityRule(visibility: FieldVisibility): Record<string, unknown> {
+  return {
+    effect: "SHOW",
+    condition: {
+      scope: `#/properties/${visibility.field}`,
+      schema: { const: visibility.equals },
+    },
+  };
+}
+
 export function compileForm(form: Readonly<Form>): CompiledForm {
   const resolved = resolveForm(form);
 
@@ -58,6 +70,7 @@ export function compileForm(form: Readonly<Form>): CompiledForm {
         type: "Control",
         scope: `#/properties/${field.name}`,
         label: field.label,
+        ...(field.visibleWhen !== undefined ? { rule: visibilityRule(field.visibleWhen) } : {}),
         ...(field.type === "textarea" ? { options: { multi: true } } : {}),
       })),
     },

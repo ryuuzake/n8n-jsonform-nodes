@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { compileForm, shapeSubmission } from "../../src/form-definition";
-import type { CompiledForm } from "../../src/form-definition";
 import {
   ConfigImportError,
+  importCombinedDocument,
+  importSplitDocuments,
   parseImportDocument,
-  transpileConfig,
 } from "../../src/form-import";
-import type { Form } from "../../src/form-definition/types";
+import type { ConfigImportIssue } from "../../src/form-import";
 
 const docWith = (
   properties: Record<string, unknown>,
@@ -33,7 +32,7 @@ const docWith = (
 
 const issuesOf = (doc: unknown): Array<{ path: string; reason: string }> => {
   try {
-    transpileConfig(doc);
+    importCombinedDocument(doc);
   } catch (error) {
     if (!(error instanceof ConfigImportError)) throw error;
     return error.issues.map((issue) => ({ path: issue.path, reason: issue.reason }));
@@ -42,6 +41,20 @@ const issuesOf = (doc: unknown): Array<{ path: string; reason: string }> => {
 };
 
 const pathsOf = (doc: unknown): string[] => issuesOf(doc).map((issue) => issue.path);
+
+/** The issues a split structural validation rejects with, or an empty array on success. */
+const issuesOfSplit = (schema: unknown, uiSchema: unknown): ConfigImportIssue[] => {
+  try {
+    importSplitDocuments(schema, uiSchema);
+    return [];
+  } catch (error) {
+    if (!(error instanceof ConfigImportError)) throw error;
+    return [...error.issues];
+  }
+};
+
+const pathsOfSplit = (schema: unknown, uiSchema: unknown): string[] =>
+  issuesOfSplit(schema, uiSchema).map((issue) => issue.path);
 
 describe("parseImportDocument", () => {
   it("parses a JSON document", () => {
@@ -64,336 +77,73 @@ describe("parseImportDocument", () => {
   });
 });
 
-describe("transpileConfig — supported constructs", () => {
-  it("maps a plain string property to a text field with label and max length", () => {
-    const form = transpileConfig(
-      docWith(
-        { name: { type: "string", maxLength: 80 } },
-        {
-          elements: [{ type: "Control", scope: "#/properties/name", label: "Full name" }],
-          required: ["name"],
-        },
-      ),
-    );
-
-    expect(form.fields).toEqual([
-      { name: "name", label: "Full name", type: "text", required: true, maxLength: 80 },
-    ]);
-  });
-
-  it("defaults the label to the property title, then to the property name", () => {
-    const form = transpileConfig(
-      docWith({
-        titled: { type: "string", title: "Your age" },
-        bare: { type: "boolean" },
-      }),
-    );
-
-    expect(form.fields.map((field) => [field.name, field.label])).toEqual([
-      ["titled", "Your age"],
-      ["bare", "bare"],
-    ]);
-  });
-
-  it("maps a multi-line Control to a textarea field", () => {
-    const form = transpileConfig(
-      docWith(
-        { bio: { type: "string" } },
-        {
-          elements: [
-            { type: "Control", scope: "#/properties/bio", label: "Bio", options: { multi: true } },
-          ],
-        },
-      ),
-    );
-
-    expect(form.fields[0]).toMatchObject({ name: "bio", type: "textarea", label: "Bio" });
-  });
-
-  it("maps a number property honoring minimum and maximum", () => {
-    const form = transpileConfig(docWith({ age: { type: "number", minimum: 18, maximum: 120 } }));
-
-    expect(form.fields).toEqual([
-      { name: "age", label: "age", type: "number", required: false, min: 18, max: 120 },
-    ]);
-  });
-
-  it("maps a date-formatted string honoring formatMinimum and formatMaximum", () => {
-    const form = transpileConfig(
-      docWith(
-        {
-          startsOn: {
-            type: "string",
-            format: "date",
-            formatMinimum: "2026-01-01",
-            formatMaximum: "2026-12-31",
-          },
-        },
-        { elements: [{ type: "Control", scope: "#/properties/startsOn", label: "Starts on" }] },
-      ),
-    );
-
-    expect(form.fields).toEqual([
-      {
-        name: "startsOn",
-        label: "Starts on",
-        type: "date",
-        required: false,
-        minDate: "2026-01-01",
-        maxDate: "2026-12-31",
-      },
-    ]);
-  });
-
-  it("maps a boolean property", () => {
-    const form = transpileConfig(docWith({ subscribe: { type: "boolean" } }));
-
-    expect(form.fields).toEqual([
-      { name: "subscribe", label: "subscribe", type: "boolean", required: false },
-    ]);
-  });
-
-  it("maps a string enum property to a select field with choices in order", () => {
-    const form = transpileConfig(
-      docWith({ plan: { type: "string", enum: ["free", "pro", "team"] } }),
-    );
-
-    expect(form.fields).toEqual([
-      { name: "plan", label: "plan", type: "select", required: false, choices: ["free", "pro", "team"] },
-    ]);
-  });
-
-  it("maps an array of string enums to a multiselect field", () => {
-    const form = transpileConfig(
-      docWith({
-        tags: { type: "array", items: { type: "string", enum: ["red", "green", "blue"] } },
-      }),
-    );
-
-    expect(form.fields).toEqual([
-      {
-        name: "tags",
-        label: "tags",
-        type: "multiselect",
-        required: false,
-        choices: ["red", "green", "blue"],
-      },
-    ]);
-  });
-
-  it("carries the root title and description into the Form", () => {
-    const form = transpileConfig(
-      docWith({ name: { type: "string" } }, { title: "Feedback", description: "Tell us more" }),
-    );
-
-    expect(form.title).toBe("Feedback");
-    expect(form.description).toBe("Tell us more");
-  });
-
-  it("keeps fields in schema property order regardless of UI Schema element order", () => {
-    const form = transpileConfig(
-      docWith(
-        { first: { type: "string" }, second: { type: "boolean" } },
-        {
-          elements: [
-            { type: "Control", scope: "#/properties/second", label: "Second" },
-            { type: "Control", scope: "#/properties/first", label: "First" },
-          ],
-        },
-      ),
-    );
-
-    expect(form.fields.map((field) => field.name)).toEqual(["first", "second"]);
-    expect(form.fields.map((field) => field.label)).toEqual(["First", "Second"]);
-  });
-
-  it("transpile-then-compile preserves schema semantics for the supported subset", () => {
+describe("importCombinedDocument — passthrough", () => {
+  it("serves a rich JSONForms document verbatim instead of transpiling it", () => {
+    // Every construct the old Field subset rejected must survive untouched.
     const document = docWith(
       {
-        fullName: { type: "string", maxLength: 80 },
-        age: { type: "number", minimum: 18, maximum: 120 },
-        startsOn: { type: "string", format: "date" },
-        subscribe: { type: "boolean" },
-        plan: { type: "string", enum: ["free", "pro"] },
-        tags: { type: "array", items: { type: "string", enum: ["red", "green"] } },
-      },
-      {
-        title: "Feedback",
-        description: "Tell us what you think",
-        required: ["fullName", "plan"],
-        elements: [
-          { type: "Control", scope: "#/properties/fullName", label: "Full name" },
-          { type: "Control", scope: "#/properties/tags", label: "Tags", options: { multi: true } },
-          { type: "Control", scope: "#/properties/startsOn", label: "Starts on" },
-        ],
-      },
-    );
-
-    const expected: CompiledForm = compileForm({
-      title: "Feedback",
-      description: "Tell us what you think",
-      fields: [
-        { name: "fullName", label: "Full name", type: "text", required: true, maxLength: 80 },
-        { name: "age", label: "age", type: "number", min: 18, max: 120 },
-        { name: "startsOn", label: "Starts on", type: "date" },
-        { name: "subscribe", label: "subscribe", type: "boolean" },
-        { name: "plan", label: "plan", type: "select", required: true, choices: ["free", "pro"] },
-        { name: "tags", label: "Tags", type: "multiselect", choices: ["red", "green"] },
-      ],
-    });
-
-    const compiled = compileForm(transpileConfig(document));
-    expect(compiled).toEqual(expected);
-  });
-
-  it("produces a Form whose submissions shape like builder-authored Forms", () => {
-    const form = transpileConfig(
-      docWith(
-        { email: { type: "string", maxLength: 254 }, plan: { type: "string", enum: ["free", "pro"] } },
-        { required: ["email", "plan"] },
-      ),
-    );
-
-    const submission = shapeSubmission(form, { email: "ada@example.com", plan: "pro" }, () => new Date(0));
-    expect(submission.submittedAt).toBe("1970-01-01T00:00:00.000Z");
-    expect(submission.email).toBe("ada@example.com");
-    expect(submission.plan).toBe("pro");
-  });
-});
-
-describe("transpileConfig — unsupported constructs are rejected loudly", () => {
-  it("rejects nested objects listing each nested leaf path", () => {
-    const paths = pathsOf(
-      docWith({
+        firstName: { type: "string", minLength: 3 },
         address: {
           type: "object",
-          properties: { city: { type: "string" }, zip: { type: "string" } },
+          properties: { street: { type: "string" }, postalCode: { type: "string", maxLength: 5 } },
         },
-      }),
-    );
-
-    expect(paths).toEqual(expect.arrayContaining(["$.address.city", "$.address.zip"]));
-  });
-
-  it("reports a nested object without properties at its own path", () => {
-    expect(pathsOf(docWith({ meta: { type: "object" } }))).toEqual(["$.meta"]);
-  });
-
-  it("rejects arrays nested inside objects instead of flattening them into fields", () => {
-    const paths = pathsOf(
-      docWith({
-        address: {
+        vegetarianOptions: {
           type: "object",
-          properties: { tags: { type: "array", items: { type: "string", enum: ["red"] } } },
+          properties: {
+            favoriteVegetable: { type: "string", enum: ["Tomato", "Other"] },
+            otherFavoriteVegetable: { type: "string" },
+          },
         },
-      }),
-    );
-
-    expect(paths).toEqual(["$.address.tags"]);
-
-    const form: Form | undefined = (() => {
-      try {
-        return transpileConfig(
-          docWith({
-            address: {
-              type: "object",
-              properties: { tags: { type: "array", items: { type: "string", enum: ["red"] } } },
-            },
-          }),
-        );
-      } catch {
-        return undefined;
-      }
-    })();
-    expect(form).toBeUndefined();
-  });
-
-  it("rejects array-of-object properties at the exact item paths", () => {
-    const paths = pathsOf(
-      docWith({
-        children: {
-          type: "array",
-          items: { type: "object", properties: { name: { type: "string" } } },
-        },
-      }),
-    );
-
-    expect(paths).toEqual(["$.children.items.name"]);
-  });
-
-  it("rejects arrays whose items are objects without properties", () => {
-    expect(pathsOf(docWith({ children: { type: "array", items: { type: "object" } } }))).toEqual([
-      "$.children.items",
-    ]);
-  });
-
-  it("rejects oneOf and anyOf variants at the property path", () => {
-    expect(pathsOf(docWith({ flexible: { oneOf: [{ type: "string" }, { type: "number" }] } }))).toEqual([
-      "$.flexible",
-    ]);
-    expect(pathsOf(docWith({ either: { anyOf: [{ type: "string" }, { type: "null" }] } }))).toEqual([
-      "$.either",
-    ]);
-  });
-
-  it("rejects conditional schema keywords at the root and inside properties", () => {
-    const rootDoc = {
-      schema: {
-        type: "object",
-        if: { properties: { plan: { const: "pro" } } },
-        then: { required: ["card"] },
-        properties: { plan: { type: "string" } },
       },
-      uiSchema: { type: "VerticalLayout", elements: [] },
-    };
-    expect(pathsOf(rootDoc)).toEqual(["$.schema.if", "$.schema.then"]);
-
-    const propertyDoc = docWith({
-      card: { type: "string", allOf: [{ minLength: 3 }] },
-    });
-    expect(pathsOf(propertyDoc)).toEqual(["$.card.allOf"]);
-  });
-
-  it("rejects UI Schema rule elements and non-Control elements", () => {
-    const ruled = docWith(
-      { name: { type: "string" } },
       {
         elements: [
           {
-            type: "Control",
-            scope: "#/properties/name",
-            rule: { effect: "SHOW", condition: {} },
+            type: "Categorization",
+            options: { variant: "stepper", showNavButtons: true },
+            elements: [
+              {
+                type: "Category",
+                label: "Main",
+                elements: [
+                  {
+                    type: "HorizontalLayout",
+                    elements: [{ type: "Control", scope: "#/properties/firstName" }],
+                  },
+                ],
+              },
+              {
+                type: "Category",
+                label: "Extra",
+                rule: {
+                  effect: "SHOW",
+                  condition: {
+                    scope: "#/properties/vegetarian",
+                    schema: { const: true },
+                  },
+                },
+                elements: [
+                  {
+                    type: "Control",
+                    scope:
+                      "#/properties/vegetarianOptions/properties/favoriteVegetable",
+                  },
+                ],
+              },
+            ],
           },
         ],
       },
     );
-    expect(pathsOf(ruled)).toEqual(["uiSchema.elements[0]"]);
 
-    const labeled = docWith(
-      { name: { type: "string" } },
-      { elements: [{ type: "Label", text: "Hello" }] },
-    );
-    expect(issuesOf(labeled)[0]?.path).toBe("uiSchema.elements[0]");
-  });
+    const documents = importCombinedDocument(document);
 
-  it("aggregates every unsupported construct into one error instead of failing fast", () => {
-    const issues = issuesOf(
-      docWith({
-        address: { type: "object", properties: { city: { type: "string" } } },
-        flexible: { oneOf: [{ type: "string" }] },
-        children: { type: "array", items: { type: "object" } },
-      }),
-    );
-
-    expect(issues.map((issue) => issue.path)).toEqual([
-      "$.address.city",
-      "$.flexible",
-      "$.children.items",
-    ]);
+    // Passthrough means byte-for-byte fidelity: no rewriting, no dropping.
+    expect(documents.schema).toEqual((document as { schema: unknown }).schema);
+    expect(documents.uiSchema).toEqual((document as { uiSchema: unknown }).uiSchema);
   });
 });
 
-describe("transpileConfig — invalid documents fail with useful errors", () => {
+describe("importCombinedDocument — structural rejections", () => {
   it.each([
     ["a string", "nope"],
     ["null", null],
@@ -408,25 +158,22 @@ describe("transpileConfig — invalid documents fail with useful errors", () => 
     expect(pathsOf({ uiSchema: { type: "VerticalLayout", elements: [] } })).toEqual(["$.schema"]);
   });
 
-  it("requires the root schema to be an object with at least one property", () => {
-    const noType = {
-      schema: { properties: { a: { type: "string" } } },
-      uiSchema: { type: "VerticalLayout", elements: [] },
-    };
-    expect(pathsOf(noType)).toContain("$.schema.type");
-
+  it("requires the root schema to be an object schema with at least one property", () => {
     expect(pathsOf(docWith({}))).toContain("$.schema.properties");
 
-    const wrongType = docWith({ a: { type: "string" } });
-    (wrongType as { schema: Record<string, unknown> }).schema.type = "array";
+    const wrongType = docWith({ a: { type: "string" } }) as {
+      schema: Record<string, unknown>;
+    };
+    wrongType.schema.type = "array";
     expect(pathsOf(wrongType)).toContain("$.schema.type");
   });
 
-  it("enforces field name rules with exact paths", () => {
-    expect(() =>
-      transpileConfig(docWith({ "first-name": { type: "string" } })),
-    ).toThrow(ConfigImportError);
-    expect(issuesOf(docWith({ submittedAt: { type: "string" } }))[0]?.reason).toMatch(/reserved/i);
+  it("rejects a uiSchema without a type so a broken page can never be served", () => {
+    const document = docWith({ name: { type: "string" } }) as {
+      uiSchema: Record<string, unknown>;
+    };
+    delete document.uiSchema.type;
+    expect(issuesOf(document)[0]).toMatchObject({ path: "$.uiSchema.type" });
   });
 
   it("rejects required entries that reference unknown properties", () => {
@@ -435,84 +182,159 @@ describe("transpileConfig — invalid documents fail with useful errors", () => 
     ]);
   });
 
-  it("rejects constraints outside the Field subset at their exact keyword paths", () => {
-    expect(
-      issuesOf(docWith({ contact: { type: "string", format: "email" } }))[0],
-    ).toMatchObject({ path: "$.contact.format" });
-    expect(issuesOf(docWith({ password: { type: "string", minLength: 8 } }))[0]).toMatchObject({
-      path: "$.password.minLength",
-    });
-    expect(issuesOf(docWith({ rate: { type: "number", exclusiveMinimum: 0 } }))[0]).toMatchObject({
-      path: "$.rate.exclusiveMinimum",
-    });
-    expect(issuesOf(docWith({ count: { type: "integer" } }))[0]).toMatchObject({
-      path: "$.count",
-    });
-    expect(issuesOf(docWith({ level: { type: "string", enum: [1, 2] } }))[0]).toMatchObject({
-      path: "$.level.enum",
-    });
-    expect(issuesOf(docWith({ weird: { type: ["string", "null"] } }))[0]).toMatchObject({
-      path: "$.weird",
-    });
-    expect(issuesOf(docWith({ mystery: {} }))[0]).toMatchObject({ path: "$.mystery" });
+  it("rejects a property named submittedAt, which the system sets on every submission", () => {
+    expect(pathsOf(docWith({ submittedAt: { type: "string" } }))).toEqual([
+      "$.schema.properties.submittedAt",
+    ]);
+    expect(issuesOf(docWith({ submittedAt: { type: "string" } }))[0]?.reason).toMatch(
+      /submittedAt/,
+    );
   });
 
-  it("rejects Controls that do not bind to a top-level schema property exactly once", () => {
-    const duplicate = docWith(
-      { name: { type: "string" } },
-      {
-        elements: [
-          { type: "Control", scope: "#/properties/name", label: "A" },
-          { type: "Control", scope: "#/properties/name", label: "B" },
-        ],
+  it("aggregates every structural problem into one report instead of failing fast", () => {
+    const issues = issuesOf({
+      schema: {
+        type: "array",
+        properties: { submittedAt: { type: "string" }, name: { type: "string" } },
+        required: ["ghost"],
       },
-    );
-    expect(pathsOf(duplicate)).toEqual(["uiSchema.elements[1]"]);
-
-    const unknown = docWith(
-      { name: { type: "string" } },
-      { elements: [{ type: "Control", scope: "#/properties/ghost" }] },
-    );
-    expect(issuesOf(unknown)[0]).toMatchObject({ path: "uiSchema.elements[0]" });
-
-    const nestedScope = docWith(
-      { name: { type: "string" } },
-      { elements: [{ type: "Control", scope: "#/properties/name/properties/deep" }] },
-    );
-    expect(issuesOf(nestedScope)[0]).toMatchObject({ path: "uiSchema.elements[0]" });
-  });
-
-  it("rejects malformed constraint values at their keyword paths", () => {
-    expect(issuesOf(docWith({ name: { type: "string", maxLength: 0 } }))[0]).toMatchObject({
-      path: "$.name.maxLength",
+      uiSchema: {},
     });
-    expect(issuesOf(docWith({ age: { type: "number", minimum: "low" } }))[0]).toMatchObject({
-      path: "$.age.minimum",
-    });
-    expect(
-      issuesOf(
-        docWith(
-          { d: { type: "string", format: "date", formatMinimum: "01/01/2026" } },
-          { elements: [{ type: "Control", scope: "#/properties/d", label: "D" }] },
-        ),
-      )[0],
-    ).toMatchObject({ path: "$.d.formatMinimum" });
-  });
 
-  it("never returns a partial Form when any issue exists", () => {
-    const form: Form | undefined = (() => {
-      try {
-        return transpileConfig(
-          docWith({
-            ok: { type: "string" },
-            broken: { type: "object", properties: { deep: { type: "string" } } },
-          }),
-        );
-      } catch {
-        return undefined;
-      }
-    })();
-
-    expect(form).toBeUndefined();
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "$.schema.type",
+      "$.schema.required[0]",
+      "$.schema.properties.submittedAt",
+      "$.uiSchema.type",
+    ]);
   });
 });
+
+describe("importSplitDocuments — passthrough", () => {
+  /** The Schema JSON half for the split-input tests below. */
+  const schemaWith = (
+    properties: Record<string, unknown>,
+    overrides: { required?: string[]; title?: string } = {},
+  ): unknown => ({
+    type: "object",
+    ...(overrides.title !== undefined ? { title: overrides.title } : {}),
+    properties,
+    ...(overrides.required ? { required: overrides.required } : {}),
+  });
+
+  it("returns both pasted documents untouched", () => {
+    const schema = schemaWith(
+      { email: { type: "string", maxLength: 254 } },
+      { required: ["email"] },
+    );
+    const uiSchema = {
+      type: "VerticalLayout",
+      elements: [{ type: "Control", scope: "#/properties/email", label: "Email" }],
+    };
+
+    const documents = importSplitDocuments(schema, uiSchema);
+
+    expect(documents.schema).toBe(schema);
+    expect(documents.uiSchema).toBe(uiSchema);
+  });
+});
+
+describe("importSplitDocuments — structural rejections carry their input prefix", () => {
+  const schemaWith = (properties: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({
+    type: "object",
+    properties,
+    ...extra,
+  });
+
+  const uiSchemaWith = (extra: Record<string, unknown> = {}) => ({
+    type: "VerticalLayout",
+    elements: [],
+    ...extra,
+  });
+
+  it.each([
+    ["a string", "nope"],
+    ["null", null],
+    ["an array", []],
+    ["a number", 42],
+  ])("rejects a Schema JSON that is %s at its own root", (_label, document) => {
+    const [issue] = issuesOfSplit(document, uiSchemaWith());
+
+    expect(issue?.path).toBe("Schema JSON: $");
+  });
+
+  it.each([
+    ["a string", "nope"],
+    ["null", null],
+    ["an array", []],
+    ["a number", 42],
+  ])("rejects a UI Schema JSON that is %s at its own root", (_label, document) => {
+    const [issue] = issuesOfSplit(schemaWith({ name: { type: "string" } }), document);
+
+    expect(issue?.path).toBe("UI Schema JSON: $");
+  });
+
+  it("roots schema-side problems under the Schema JSON prefix", () => {
+    expect(
+      pathsOfSplit(
+        schemaWith({ name: { type: "string" } }, { required: ["ghost"] }),
+        uiSchemaWith(),
+      ),
+    ).toEqual(["Schema JSON: $.required[0]"]);
+  });
+
+  it("roots uiSchema-side problems under the UI Schema JSON prefix", () => {
+    expect(pathsOfSplit(schemaWith({ name: { type: 'string' } }), {})).toEqual([
+      "UI Schema JSON: $.type",
+    ]);
+  });
+
+  it("reports both rejected inputs together when both are structurally broken", () => {
+    expect(pathsOfSplit({ properties: {} }, { elements: [] })).toEqual([
+      "Schema JSON: $.type",
+      "Schema JSON: $.properties",
+      "UI Schema JSON: $.type",
+    ]);
+  });
+});
+
+describe("importSplitDocuments — Combined Document rejection", () => {
+  const fullDoc = docWith({ name: { type: "string" } });
+
+  it("rejects a full {schema, uiSchema} blob pasted as Schema JSON", () => {
+    const [issue] = issuesOfSplit(fullDoc, uiSchemaOf(fullDoc));
+
+    expect(issue?.path).toBe("Schema JSON: $");
+    expect(issue?.reason).toMatch(/combined/i);
+    expect(issue?.reason).toMatch(/"schema"/);
+  });
+
+  it("rejects a full {schema, uiSchema} blob pasted as UI Schema JSON", () => {
+    const [issue] = issuesOfSplit(schemaSide(fullDoc), fullDoc);
+
+    expect(issue?.path).toBe("UI Schema JSON: $");
+    expect(issue?.reason).toMatch(/combined/i);
+    expect(issue?.reason).toMatch(/"uiSchema"/);
+  });
+
+  it("reports both rejected inputs together when both hold Combined Documents", () => {
+    expect(pathsOfSplit(fullDoc, fullDoc)).toEqual(["Schema JSON: $", "UI Schema JSON: $"]);
+  });
+
+  it("does not mistake a schema with a property named schema for a Combined Document", () => {
+    const documents = importSplitDocuments(
+      { type: "object", properties: { schema: { type: "string" } } },
+      { type: "VerticalLayout", elements: [] },
+    );
+
+    expect(documents.schema).toBeDefined();
+  });
+});
+
+function uiSchemaOf(document: unknown): unknown {
+  return (document as { uiSchema: unknown }).uiSchema;
+}
+
+function schemaSide(document: unknown): unknown {
+  return (document as { schema: unknown }).schema;
+}

@@ -8,6 +8,7 @@ export {
   UnknownFieldTypeError,
 } from "./errors";
 export { compileForm } from "./compile";
+export { shapeDocumentSubmission } from "./document-submission";
 export { resolveFields, resolveForm } from "./resolve";
 export { SubmissionShapeError, shapeSubmission } from "./shape";
 export type {
