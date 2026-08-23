@@ -1,0 +1,26 @@
+services:
+  n8n:
+    build: .
+    image: n8n-jsonform:latest
+    container_name: n8n-jsonform
+    restart: unless-stopped
+    # Bind on all host interfaces
+    ports:
+      - "0.0.0.0:5678:5678"
+    environment:
+      # Listen on all interfaces inside the container
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      # Set to the machine's LAN IP or domain so form/webhook URLs are correct
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
+      # Allow login over plain HTTP when accessing via LAN IP
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
