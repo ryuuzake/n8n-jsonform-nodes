@@ -20,7 +20,7 @@ The **JSON Form** trigger node turns a webhook path into a self-contained form p
 
 Field values keep their types (numbers stay numbers, booleans stay booleans), query parameters are never included, and `submittedAt` is system-set.
 
-There are two ways to define what the form asks — **build Fields in the node UI** or **import standard JSONForms JSON** (Schema JSON + UI Schema JSON). Both produce the same internal form definition; a filled import replaces the builder fields wholesale.
+There are two ways to define what the form asks — **build Fields in the node UI** or **import standard JSONForms JSON** (Schema JSON + UI Schema JSON). Builder Fields compile to the same schema/uiSchema pair the page renders; a filled import is served verbatim and replaces the builder fields wholesale.
 
 ## Install
 
@@ -70,10 +70,12 @@ Fields are configured directly in the node's editable **Fields** collection (add
 
 Type-appropriate constraint inputs appear automatically:
 
-- **Max Length** for Text / Long Text (maximum characters accepted)
+- **Min Length** / **Max Length** for Text / Long Text (character bounds)
 - **Minimum / Maximum** for Number (inclusive bounds)
 - **Minimum Date / Maximum Date** for Date (inclusive bounds as `YYYY-MM-DD`)
 - **Choices** for Dropdown / Multi-Select Dropdown (the allowed values)
+
+Every field also accepts an optional visibility condition: set **Visible When Field** to the name of another field in the form and **Visible When Value** to the value it must hold (`true`/`false` compare as booleans, numeric text as a number). While the condition does not hold the field is hidden on the served page; leave **Visible When Field** empty to always show the field.
 
 Two optional texts round out the page: **Title** (heading at the top of the served page) and **Description** (text under the title).
 
@@ -81,7 +83,7 @@ An invalid configuration fails fast with a node error naming the offending field
 
 ## Importing JSONForms JSON
 
-Paste standard JSONForms JSON into the two import inputs — **Schema JSON** (the JSON Schema describing the form's properties) and **UI Schema JSON** (the UI Schema describing presentation). Import is **all-or-nothing**: it happens only when both inputs are filled; exactly one filled is an error naming the missing half, and both empty falls back to the Fields built in the node. When both are filled they are transpiled into fields and **replace** whatever is built in the Fields collection (never merged). Example:
+Paste standard JSONForms JSON into the two import inputs — **Schema JSON** (the JSON Schema describing the form's properties) and **UI Schema JSON** (the UI Schema describing presentation). Import is **all-or-nothing**: it happens only when both inputs are filled; exactly one filled is an error naming the missing half, and both empty falls back to the Fields built in the node. When both are filled they are **served verbatim** and replace whatever is built in the Fields collection (never merged; never rewritten). Example:
 
 ```json
 {
@@ -116,22 +118,19 @@ goes into **Schema JSON**, while
 
 goes into **UI Schema JSON**.
 
-Supported subset (everything else is rejected loudly, with exact paths — nothing is silently dropped):
+Because imports are served as authored, everything JSONForms understands works: nested objects (submissions keep the nesting), `minLength` / `pattern` and any other JSON Schema keyword, UI rules (`SHOW` / `HIDE` conditions), and layouts such as `HorizontalLayout`, `Group`, or a root `Categorization` with the stepper variant. The page validates client-side with the same Ajv setup JSONForms uses.
 
-- **Schema JSON root**: `type: "object"` with at least one property; root `title` / `description` become the page heading / subtext.
-- **Properties** become fields by type:
-  - `string` → Text (**Long Text** via `"options": {"multi": true}` on its Control), Dropdown when it has a string `enum`, Date when `"format": "date"`
-  - `string` constraints: `maxLength`; date bounds: `formatMinimum` / `formatMaximum`
-  - `number` → Number with inclusive `minimum` / `maximum` (use `number`, not `integer`)
-  - `boolean` → Switch
-  - `array` of string enums → Multi-Select Dropdown
-- **Required**: the schema `required` array marks fields as mandatory.
-- **UI Schema**: only `Control` elements bound to top-level properties (`#/properties/<name>`), each carrying an optional string `label`.
-- Not supported: nested objects, `oneOf` / `anyOf`, conditionals (`if`/`then`/`else`, `allOf`, `not`, `$ref`), `pattern` / `minLength`, exclusive bounds, type unions, UI rules, layouts other than a flat element list.
+Only structural invariants are enforced — everything else is your document:
 
-Rejection messages prefix every offending path with its input — e.g. `Schema JSON: $.seats.maximum` or `UI Schema JSON: $.elements[2]` — because both inputs root at `$`. A legacy combined `{ schema, uiSchema }` document pasted into either input is detected and rejected with a pointer to paste only the inner half.
+- both halves must parse as JSON objects;
+- the schema root must be `type: "object"` asking at least one property;
+- every entry of `required` must name a defined property;
+- no property may be named `submittedAt` (the system stamps it on every submission);
+- the uiSchema must carry a `type`, so there is something to render.
 
-If an import cannot be served (invalid JSON, unsupported constructs), GET answers with an explanatory page listing every offending path instead of a broken form; POST refuses submissions while the configuration is invalid.
+Rejection messages prefix every offending path with its input — e.g. `Schema JSON: $.properties.email` — because both inputs root at `$`. A legacy combined `{ schema, uiSchema }` document pasted into either input is detected and rejected with a pointer to paste only the inner half.
+
+If an import is structurally unsound, GET answers with an explanatory page listing every offending path instead of a broken form; POST refuses submissions while the configuration is invalid.
 
 > **Upgrading from v1:** nodes added before the split read the old single **Import Config** field and keep working unchanged (node version 1). To adopt the split inputs, replace the node in your workflow (it will be version 2) and re-paste the two halves into Schema JSON / UI Schema JSON.
 
@@ -204,7 +203,7 @@ npm pack --dry-run   # inspect exactly what would publish
 
 - `nodes/JsonForm/` — the trigger node implementation (parameters, webhook handling, auth, import resolution)
 - `src/form-definition/` — Field/Form model, compilation to JSON Schema + UI Schema, submission shaping
-- `src/form-import/` — JSONForms → Fields transpiler with loud, exact-path rejections (split inputs on v2; legacy combined document on v1)
+- `src/form-import/` — structural validation of pasted documents with loud, exact-path rejections; valid imports pass through verbatim (split inputs on v2; legacy combined document on v1)
 - `web/` — Vite + React app (JSONForms + shadcn/ui) bundled into a single HTML file by `vite-plugin-singlefile`
 
 ## License

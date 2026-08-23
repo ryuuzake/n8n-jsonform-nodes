@@ -25,7 +25,13 @@ _Avoid_: ui config, layout
 ### Import rules
 
 **Imported Form**:
-The Form produced by transpiling Schema JSON + UI Schema JSON. When both inputs are non-empty it replaces Builder Fields wholesale — never merged.
+The Form defined by Schema JSON + UI Schema JSON. When both inputs are non-empty it replaces Builder Fields wholesale — never merged, never rewritten: the documents are served and validated as authored.
+
+**Passthrough import**:
+The architectural rule that imported documents are not transpiled into Builder Fields. The pasted schema/uiSchema pair is stored verbatim, served verbatim (GET), and enforced server-side with Ajv against the pasted schema (POST). Anything JSONForms understands — nested objects, UI rules, Categorization layouts, arbitrary keywords — therefore works as authored; submissions keep their nesting.
+
+**Structural check**:
+One of the few invariants an import must satisfy before it is accepted: both halves are JSON objects, the root schema is `type: "object"` with at least one property, `required` only references defined properties, no property collides with the system-set `submittedAt`, and the uiSchema carries a `type`. Constructs outside these checks are never judged.
 
 **All-or-nothing import**:
 Import happens only when both inputs are non-empty; exactly one filled is an error naming the missing half. Both empty falls back to Builder Fields.
@@ -39,4 +45,4 @@ A legacy `{schema, uiSchema}` wrapper object. Rejected by either split input wit
 One rejected location in an imported document: a JSONPath rooted at `$` of the offending input plus a reason. All issues are reported together, never silently dropped.
 
 **Path rooting**:
-Every issue path is prefixed with its source (`Schema JSON:` / `UI Schema JSON:`) because both documents root at `$`. Properties are abbreviated to `$.<name>`; UI elements use `$.elements[<index>]`.
+Every issue path is prefixed with its source (`Schema JSON:` / `UI Schema JSON:`) because both documents root at `$` (`Schema JSON: $.properties.email`). Legacy v1 wrapper paths hang off the envelope instead (`$.schema.properties.email`).

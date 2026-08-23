@@ -176,6 +176,8 @@ describe("shapeSubmission", () => {
         [{ name: "f", label: "F", type: "number", min: 1, max: 10 }, 11],
         [{ name: "f", label: "F", type: "date", minDate: "2026-01-01" }, "2025-12-31"],
         [{ name: "f", label: "F", type: "date", maxDate: "2026-01-01" }, "2026-06-15"],
+        [{ name: "f", label: "F", type: "text", minLength: 3 }, "ab"],
+        [{ name: "f", label: "F", type: "textarea", minLength: 4 }, "abc"],
       ];
       for (const [field, bad] of cases) {
         expect(
@@ -183,6 +185,14 @@ describe("shapeSubmission", () => {
           `expected constraint violation for ${JSON.stringify(bad)}`,
         ).toThrow(/must/);
       }
+    });
+
+    it("treats an empty optional text value as untouched instead of a minLength violation", () => {
+      const form = formWith({ name: "f", label: "F", type: "text", minLength: 3 });
+
+      const submission = shapeSubmission(form, { f: "" }, FIXED_CLOCK);
+
+      expect(submission.f).toBe("");
     });
   });
 

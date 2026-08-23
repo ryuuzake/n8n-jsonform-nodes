@@ -111,6 +111,14 @@ function compact<T extends object>(object: T): T {
   ) as T;
 }
 
+/** Interpret a typed-in comparison value: booleans stay booleans, numbers become numbers. */
+function coerceVisibleWhenValue(raw: string): string | number | boolean {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  return raw;
+}
+
 function normalizeEntry(entry: RawEntry, index: number): Field {
   const name = optionalString(entry.name);
   const label = optionalString(entry.label);
@@ -129,11 +137,23 @@ function normalizeEntry(entry: RawEntry, index: number): Field {
   const required = requiredFlag(entry.required);
   if (required !== undefined) field.required = required;
 
+  const visibleWhenField = optionalString(entry.visibleWhenField);
+  if (visibleWhenField !== undefined) {
+    const rawValue = optionalString(entry.visibleWhenValue);
+    if (rawValue === undefined) {
+      throw new Error(
+        `Field ${index} ("${display}") has a Visible When Field ("${visibleWhenField}") but no Visible When Value; fill in both or clear the field.`,
+      );
+    }
+    field.visibleWhen = { field: visibleWhenField, equals: coerceVisibleWhenValue(rawValue) };
+  }
+
   // Constraints are read per type so leftovers from a previous type selection
   // (invisible in the UI after switching) never leak into the built Form.
   switch (type as FieldType) {
     case 'text':
     case 'textarea':
+      field.minLength = optionalNumber(entry, 'minLength', display);
       field.maxLength = optionalNumber(entry, 'maxLength', display);
       break;
     case 'number':

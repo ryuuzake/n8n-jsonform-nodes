@@ -24,23 +24,32 @@ const uiSchemaJson = JSON.stringify({
 describe("resolveEffectiveForm", () => {
   it("falls back to the builder-authored Form while both inputs are untouched", () => {
     for (const empty of [undefined, "", "   "]) {
-      expect(resolveEffectiveForm(builtForm, empty, empty)).toEqual(builtForm);
+      expect(resolveEffectiveForm(builtForm, empty, empty)).toEqual({
+        kind: "builder",
+        form: builtForm,
+      });
     }
   });
 
   it("never lets a request mutate the builder-authored Form it was handed", () => {
     const resolved = resolveEffectiveForm(builtForm, "", "");
 
-    expect(resolved).not.toBe(builtForm);
-    expect(resolved.fields[0]).not.toBe(builtForm.fields[0]);
+    expect(resolved.kind).toBe("builder");
+    if (resolved.kind !== "builder") return;
+    expect(resolved.form).not.toBe(builtForm);
+    expect(resolved.form.fields[0]).not.toBe(builtForm.fields[0]);
   });
 
-  it("transpiles both pasted inputs into the effective Form", () => {
-    const form = resolveEffectiveForm(builtForm, schemaJson, uiSchemaJson);
+  it("passes both pasted inputs through verbatim as the effective documents", () => {
+    const resolved = resolveEffectiveForm(builtForm, schemaJson, uiSchemaJson);
 
-    expect(form.fields).toEqual([
-      { name: "email", label: "Email", type: "text", required: true, maxLength: 254 },
-    ]);
+    expect(resolved).toEqual({
+      kind: "imported",
+      documents: {
+        schema: JSON.parse(schemaJson),
+        uiSchema: JSON.parse(uiSchemaJson),
+      },
+    });
   });
 
   it("imports all-or-nothing: a lone Schema JSON names the missing UI half", () => {
@@ -114,59 +123,50 @@ describe("resolveEffectiveForm", () => {
       expect((error as ConfigImportError).issues[0]?.path).toBe("UI Schema JSON: $");
     }
 
-    const form = resolveEffectiveForm(builtForm, schemaObject, JSON.parse(uiSchemaJson));
-    expect(form.fields).toEqual([
-      { name: "email", label: "Email", type: "text", required: true, maxLength: 254 },
-    ]);
+    const resolved = resolveEffectiveForm(builtForm, schemaObject, JSON.parse(uiSchemaJson));
+    expect(resolved.kind).toBe("imported");
   });
 
-  it("rejects documents outside the Field subset loudly with prefixed paths", () => {
-    const nested = JSON.stringify({
-      type: "object",
-      properties: {
-        address: { type: "object", properties: { city: { type: "string" } } },
-      },
+  it("rejects structurally unsound documents loudly with prefixed paths", () => {
+    const noType = JSON.stringify({
+      properties: { email: { type: "string" } },
     });
     const ui = JSON.stringify({ type: "VerticalLayout", elements: [] });
 
     try {
-      resolveEffectiveForm(builtForm, nested, ui);
+      resolveEffectiveForm(builtForm, noType, ui);
       expect.unreachable("expected ConfigImportError");
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigImportError);
-      expect((error as ConfigImportError).message).toContain("Schema JSON: $.address.city");
+      expect((error as ConfigImportError).message).toContain("Schema JSON: $.type");
     }
   });
 });
 
 describe("resolveLegacyImportedForm", () => {
-  it("transpiles the v1 combined document with its original un-prefixed paths", () => {
+  it("passes the v1 combined document's halves through with their original wrapper paths", () => {
     const combined = JSON.stringify({
       schema: JSON.parse(schemaJson),
       uiSchema: JSON.parse(uiSchemaJson),
     });
 
-    const form = resolveLegacyImportedForm(combined);
+    const resolved = resolveLegacyImportedForm(combined);
 
-    expect(form.fields).toEqual([
-      { name: "email", label: "Email", type: "text", required: true, maxLength: 254 },
-    ]);
+    expect(resolved.kind).toBe("imported");
+    if (resolved.kind !== "imported") return;
+    expect(resolved.documents.schema).toEqual(JSON.parse(schemaJson));
+    expect(resolved.documents.uiSchema).toEqual(JSON.parse(uiSchemaJson));
 
     try {
       resolveLegacyImportedForm(
         JSON.stringify({
-          schema: {
-            type: "object",
-            properties: {
-              address: { type: "object", properties: { city: { type: "string" } } },
-            },
-          },
+          schema: { properties: { email: { type: "string" } } },
           uiSchema: { type: "VerticalLayout", elements: [] },
         }),
       );
       expect.unreachable("expected ConfigImportError");
     } catch (error) {
-      expect((error as ConfigImportError).message).toContain("$.address.city");
+      expect((error as ConfigImportError).message).toContain("$.schema.type");
       expect((error as ConfigImportError).message).not.toContain("Schema JSON:");
     }
   });

@@ -18,6 +18,10 @@ export interface Field {
   required?: boolean;
   /** `text` and `textarea` only: maximum character length. */
   maxLength?: number;
+  /** `text` and `textarea` only: minimum character length. */
+  minLength?: number;
+  /** Show this field only while `field` equals `equals` (compiled to a SHOW rule). */
+  visibleWhen?: FieldVisibility;
   /** `number` only: inclusive lower bound. */
   min?: number;
   /** `number` only: inclusive upper bound. */
@@ -36,12 +40,23 @@ export interface Form {
   fields: Field[];
 }
 
+/**
+ * A single-equality visibility condition: the named field must equal `equals`
+ * (a JSON primitive) for the guarded field to be shown.
+ */
+export interface FieldVisibility {
+  field: string;
+  equals: string | number | boolean;
+}
+
 export interface ResolvedField {
   name: string;
   label: string;
   type: FieldType;
   required: boolean;
   maxLength?: number;
+  minLength?: number;
+  visibleWhen?: FieldVisibility;
   min?: number;
   max?: number;
   minDate?: string;

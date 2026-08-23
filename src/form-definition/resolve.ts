@@ -34,11 +34,33 @@ export function resolveFields(fields: readonly Field[]): ResolvedField[] {
 
     switch (field.type) {
       case "text":
-      case "textarea":
+      case "textarea": {
         if (field.maxLength !== undefined && field.maxLength < 1) {
           throw new InvalidConstraintError(index, field.name, "maxLength must be at least 1.");
         }
+        if (
+          field.minLength !== undefined &&
+          (!Number.isInteger(field.minLength) || field.minLength < 1)
+        ) {
+          throw new InvalidConstraintError(
+            index,
+            field.name,
+            "minLength must be an integer of at least 1.",
+          );
+        }
+        if (
+          field.minLength !== undefined &&
+          field.maxLength !== undefined &&
+          field.minLength > field.maxLength
+        ) {
+          throw new InvalidConstraintError(
+            index,
+            field.name,
+            `minLength (${field.minLength}) must not exceed maxLength (${field.maxLength}).`,
+          );
+        }
         break;
+      }
       case "number":
         if (field.min !== undefined && field.max !== undefined && field.min > field.max) {
           throw new InvalidConstraintError(
@@ -85,12 +107,41 @@ export function resolveFields(fields: readonly Field[]): ResolvedField[] {
     }
   });
 
+  // Visibility conditions reference sibling fields, so they can only be
+  // checked once every name is known.
+  const names = new Set(fields.map((field) => field.name));
+  fields.forEach((field, index) => {
+    if (field.visibleWhen === undefined) return;
+    const target = field.visibleWhen.field;
+    if (!names.has(target) || target === field.name) {
+      throw new InvalidConstraintError(
+        index,
+        field.name,
+        `visibleWhen references "${target}", which is ${
+          target === field.name ? "the field itself" : "not a defined field"
+        }.`,
+      );
+    }
+    const equals = field.visibleWhen.equals;
+    if (!["string", "number", "boolean"].includes(typeof equals)) {
+      throw new InvalidConstraintError(
+        index,
+        field.name,
+        "visibleWhen requires a string, number, or boolean comparison value.",
+      );
+    }
+  });
+
   return fields.map((field) => ({
     name: field.name,
     label: field.label,
     type: field.type,
     required: field.required ?? false,
     ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
+    ...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
+    ...(field.visibleWhen !== undefined
+      ? { visibleWhen: { ...field.visibleWhen } }
+      : {}),
     ...(field.min !== undefined ? { min: field.min } : {}),
     ...(field.max !== undefined ? { max: field.max } : {}),
     ...(field.minDate !== undefined ? { minDate: field.minDate } : {}),

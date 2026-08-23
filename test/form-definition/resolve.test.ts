@@ -71,6 +71,91 @@ describe("resolveFields", () => {
     }
   });
 
+  it("rejects a non-positive or fractional minLength on text fields", () => {
+    for (const minLength of [0, -1, 2.5]) {
+      expect(() => resolveFields([{ name: "bio", label: "Bio", type: "text", minLength }])).toThrow(
+        InvalidConstraintError,
+      );
+    }
+    for (const type of ["text", "textarea"] as const) {
+      expect(() =>
+        resolveFields([{ name: "bio", label: "Bio", type, minLength: 3 }]),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects a minLength exceeding the maxLength on the same field", () => {
+    expect(() =>
+      resolveFields([
+        { name: "code", label: "Code", type: "text", minLength: 6, maxLength: 4 },
+      ]),
+    ).toThrow(InvalidConstraintError);
+  });
+
+  it("rejects visibility conditions referencing unknown fields or themselves", () => {
+    expect(() =>
+      resolveFields([
+        {
+          name: "other",
+          label: "Other",
+          type: "text",
+          visibleWhen: { field: "ghost", equals: true },
+        },
+      ]),
+    ).toThrow(InvalidConstraintError);
+
+    expect(() =>
+      resolveFields([
+        {
+          name: "self",
+          label: "Self",
+          type: "text",
+          visibleWhen: { field: "self", equals: "yes" },
+        },
+      ]),
+    ).toThrow(InvalidConstraintError);
+  });
+
+  it("rejects visibility conditions whose comparison value is not a primitive", () => {
+    expect(() =>
+      resolveFields([
+        {
+          name: "conditional",
+          label: "Conditional",
+          type: "text",
+          visibleWhen: { field: "trigger", equals: { deep: true } as unknown as string },
+        },
+      ]),
+    ).toThrow(InvalidConstraintError);
+  });
+
+  it("carries minLength and visibleWhen onto resolved fields", () => {
+    expect(
+      resolveFields([
+        { name: "vegetarian", label: "Vegetarian", type: "boolean" },
+        {
+          name: "other_vegetable",
+          label: "Other vegetable",
+          type: "text",
+          minLength: 2,
+          maxLength: 40,
+          visibleWhen: { field: "vegetarian", equals: true },
+        },
+      ]),
+    ).toEqual([
+      { name: "vegetarian", label: "Vegetarian", type: "boolean", required: false },
+      {
+        name: "other_vegetable",
+        label: "Other vegetable",
+        type: "text",
+        required: false,
+        minLength: 2,
+        maxLength: 40,
+        visibleWhen: { field: "vegetarian", equals: true },
+      },
+    ]);
+  });
+
   it("rejects inverted number bounds", () => {
     expect(() =>
       resolveFields([{ name: "age", label: "Age", type: "number", min: 10, max: 2 }]),

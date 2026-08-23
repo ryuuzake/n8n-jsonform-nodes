@@ -84,6 +84,81 @@ describe('buildFormFromParameters', () => {
     expect(form.fields).toEqual([{ name: 'score', label: 'Score', type: 'number' }]);
   });
 
+  it('reads minLength for text and textarea entries', () => {
+    const form = buildFormFromParameters({
+      fields: fieldsParam(
+        { name: 'code', label: 'Code', type: 'text', minLength: '4' },
+        { name: 'bio', label: 'Bio', type: 'textarea', minLength: 10 },
+        { name: 'age', label: 'Age', type: 'number', minLength: '2' },
+      ),
+    });
+
+    expect(form.fields[0]).toMatchObject({ name: 'code', minLength: 4 });
+    expect(form.fields[1]).toMatchObject({ name: 'bio', minLength: 10 });
+    // Constraints that do not apply to the chosen type never leak.
+    expect('minLength' in form.fields[2]!).toBe(false);
+  });
+
+  it('reads a visibility condition, coercing true/false literals to booleans', () => {
+    const form = buildFormFromParameters({
+      fields: fieldsParam(
+        { name: 'subscribe', label: 'Subscribe', type: 'boolean' },
+        {
+          name: 'address',
+          label: 'Address',
+          type: 'text',
+          visibleWhenField: 'subscribe',
+          visibleWhenValue: 'true',
+        },
+        {
+          name: 'other',
+          label: 'Other',
+          type: 'text',
+          visibleWhenField: 'subscribe',
+          visibleWhenValue: 'false',
+        },
+        {
+          name: 'detail',
+          label: 'Detail',
+          type: 'textarea',
+          visibleWhenField: 'subscribe',
+          visibleWhenValue: 'yes',
+        },
+      ),
+    });
+
+    expect(form.fields[1]?.visibleWhen).toEqual({ field: 'subscribe', equals: true });
+    expect(form.fields[2]?.visibleWhen).toEqual({ field: 'subscribe', equals: false });
+    expect(form.fields[3]?.visibleWhen).toEqual({ field: 'subscribe', equals: 'yes' });
+  });
+
+  it('ignores a visibility condition with no referenced field', () => {
+    const form = buildFormFromParameters({
+      fields: fieldsParam({
+        name: 'maybe',
+        label: 'Maybe',
+        type: 'text',
+        visibleWhenValue: 'true',
+      }),
+    });
+
+    expect('visibleWhen' in form.fields[0]!).toBe(false);
+  });
+
+  it('fails fast when a visibility condition names a field but no value', () => {
+    expect(() =>
+      buildFormFromParameters({
+        fields: fieldsParam({
+          name: 'maybe',
+          label: 'Maybe',
+          type: 'text',
+          visibleWhenField: 'subscribe',
+          visibleWhenValue: '',
+        }),
+      }),
+    ).toThrow(/Visible When Field.*but no Visible When Value/i);
+  });
+
   it('keeps order so authors can reorder fields in the collection editor', () => {
     const form = buildFormFromParameters({
       fields: fieldsParam(

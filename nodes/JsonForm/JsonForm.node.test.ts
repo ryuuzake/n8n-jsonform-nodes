@@ -1,4 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 import { NodeOperationError } from 'n8n-workflow';
 
@@ -24,14 +26,45 @@ const importedDoc = JSON.stringify({
   },
 });
 
-const nestedDoc = JSON.stringify({
+/**
+ * An import whose schema collides with the system-set submission timestamp —
+ * the one structural rejection every import shares.
+ */
+const reservedDoc = JSON.stringify({
   schema: {
     type: 'object',
     properties: {
-      address: { type: 'object', properties: { city: { type: 'string' } } },
+      submittedAt: { type: 'string' },
     },
   },
   uiSchema: { type: 'VerticalLayout', elements: [] },
+});
+
+/** A passthrough import: nested objects and UI rules must survive untouched. */
+const nestedDoc = JSON.stringify({
+  schema: {
+    type: 'object',
+    title: 'Nested form',
+    properties: {
+      provideAddress: { type: 'boolean' },
+      address: { type: 'object', properties: { city: { type: 'string', minLength: 3 } } },
+    },
+  },
+  uiSchema: {
+    type: 'Categorization',
+    options: { variant: 'stepper' },
+    elements: [
+      {
+        type: 'Category',
+        label: 'Address',
+        rule: {
+          effect: 'SHOW',
+          condition: { scope: '#/properties/provideAddress', schema: { const: true } },
+        },
+        elements: [{ type: 'Control', scope: '#/properties/address/properties/city' }],
+      },
+    ],
+  },
 });
 
 /** Schema JSON input half replacing builder Fields in the v2 tests below. */
@@ -282,11 +315,23 @@ describe('JsonForm node description', () => {
     };
 
     expect(showFor(entryProperty('maxLength'))).toEqual(['text', 'textarea']);
+    expect(showFor(entryProperty('minLength'))).toEqual(['text', 'textarea']);
     expect(showFor(entryProperty('min'))).toEqual(['number']);
     expect(showFor(entryProperty('max'))).toEqual(['number']);
     expect(showFor(entryProperty('minDate'))).toEqual(['date']);
     expect(showFor(entryProperty('maxDate'))).toEqual(['date']);
     expect(showFor(entryProperty('choices'))).toEqual(['select', 'multiselect']);
+  });
+
+  it('exposes the visibility condition inputs on every field entry', () => {
+    const fieldInput = entryProperty('visibleWhenField');
+    expect(fieldInput).toMatchObject({ type: 'string' });
+    expect(String(fieldInput.description)).toMatch(/another field/i);
+
+    // The comparison value accepts raw text and coerces true/false/numbers.
+    const valueInput = entryProperty('visibleWhenValue');
+    expect(valueInput).toMatchObject({ type: 'string' });
+    expect(String(valueInput.description)).toMatch(/true/i);
   });
 
   it('documents the design-time name rules on the Name input', () => {
@@ -490,23 +535,26 @@ describe('JsonForm webhook', () => {
   });
 
   describe('import config', () => {
-    it('GET serves a form compiled from the imported document instead of the built Fields', async () => {
-      const { res } = await setup({ method: 'GET', parameters: { importConfig: importedDoc } });
+    it('GET serves the imported document verbatim instead of compiling builder Fields', async () => {
+      const { res } = await setup({ method: 'GET', parameters: { importConfig: nestedDoc } });
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toContain('"Imported form"');
-      expect(res.body).toContain('"required":["email"]');
+      const config = parseServedConfig(res.body);
+      // Nested objects, UI rules, and Categorization options survive untouched.
+      const schema = config.schema as Record<string, unknown>;
+      expect(schema).toEqual(JSON.parse(nestedDoc).schema);
+      expect(config.uiSchema).toEqual(JSON.parse(nestedDoc).uiSchema);
       // Built Fields are replaced, never merged.
       expect(res.body).not.toContain('#/properties/name');
     });
 
     it('GET explains the rejection instead of serving a broken or empty form', async () => {
-      const { result, res } = await setup({ method: 'GET', parameters: { importConfig: nestedDoc } });
+      const { result, res } = await setup({ method: 'GET', parameters: { importConfig: reservedDoc } });
 
       expect(result?.noWebhookResponse).toBe(true);
       expect(res.statusCode).toBe(500);
       expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
-      expect(res.body).toContain('$.address.city');
+      expect(res.body).toContain('$.schema.properties.submittedAt');
       expect(res.body).not.toContain('id="jsonform-config"');
     });
 
@@ -530,16 +578,15 @@ describe('JsonForm webhook', () => {
       const json = result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
       expect(json.email).toBe('ada@example.com');
       expect(json.plan).toBe('pro');
-
-      // The built Fields are gone: their required values are not demanded
-      // and their name field is no longer accepted.
+      // The pasted schema is the contract: keys it permits pass through even
+      // when they match nothing in the builder Fields.
       const withBuilderOnly = await setup({
         method: 'POST',
         body: { email: 'ada@example.com', plan: 'pro', name: 'Ada' },
         parameters: { importConfig: importedDoc },
       });
       const shaped = withBuilderOnly.result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
-      expect(shaped.name).toBeUndefined();
+      expect(shaped.name).toBe('Ada');
     });
 
     it('POST validates against the imported Form constraints', async () => {
@@ -558,13 +605,13 @@ describe('JsonForm webhook', () => {
       const { result, res } = await setup({
         method: 'POST',
         body: {},
-        parameters: { importConfig: nestedDoc },
+        parameters: { importConfig: reservedDoc },
       });
 
       expect(result?.workflowData).toBeUndefined();
       expect(result?.noWebhookResponse).toBe(true);
       expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body).error).toContain('$.address.city');
+      expect(JSON.parse(res.body).error).toContain('$.schema.properties.submittedAt');
     });
   });
 
@@ -626,20 +673,18 @@ describe('JsonForm webhook', () => {
     });
 
     it('GET prefixes rejection paths with their input', async () => {
-      const nestedSchemaJson = JSON.stringify({
+      const reservedSchemaJson = JSON.stringify({
         type: 'object',
-        properties: {
-          address: { type: 'object', properties: { city: { type: 'string' } } },
-        },
+        properties: { submittedAt: { type: 'string' } },
       });
       const { res } = await setup({
         method: 'GET',
         typeVersion: 2,
-        parameters: { schemaJson: nestedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+        parameters: { schemaJson: reservedSchemaJson, uiSchemaJson: importedUiSchemaJson },
       });
 
       expect(res.statusCode).toBe(500);
-      expect(res.body).toContain('Schema JSON: $.address.city');
+      expect(res.body).toContain('Schema JSON: $.properties.submittedAt');
     });
 
     it('POST shapes submissions against the imported Form from split inputs', async () => {
@@ -656,21 +701,19 @@ describe('JsonForm webhook', () => {
     });
 
     it('POST refuses to run against an invalid imported document', async () => {
-      const nestedSchemaJson = JSON.stringify({
+      const reservedSchemaJson = JSON.stringify({
         type: 'object',
-        properties: {
-          address: { type: 'object', properties: { city: { type: 'string' } } },
-        },
+        properties: { submittedAt: { type: 'string' } },
       });
       const { res } = await setup({
         method: 'POST',
         typeVersion: 2,
         body: {},
-        parameters: { schemaJson: nestedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+        parameters: { schemaJson: reservedSchemaJson, uiSchemaJson: importedUiSchemaJson },
       });
 
       expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body).error).toContain('Schema JSON: $.address.city');
+      expect(JSON.parse(res.body).error).toContain('Schema JSON: $.properties.submittedAt');
     });
 
     it('v1 nodes ignore v2 params and keep reading the legacy combined document', async () => {
@@ -682,6 +725,67 @@ describe('JsonForm webhook', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toContain('"Imported form"');
+    });
+
+    it('serves the regression fixtures verbatim, Categorization stepper included', async () => {
+      const schemaJson = readFileSync(path.join(process.cwd(), 'test', 'fixtures', 'schema.json'), 'utf8');
+      const uiSchemaJson = readFileSync(path.join(process.cwd(), 'test', 'fixtures', 'ui-schema.json'), 'utf8');
+
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { schemaJson, uiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const config = parseServedConfig(res.body);
+      expect(config.schema).toEqual(JSON.parse(schemaJson));
+      expect(config.uiSchema).toEqual(JSON.parse(uiSchemaJson));
+
+      const posted = await setup({
+        method: 'POST',
+        typeVersion: 2,
+        body: {
+          firstName: 'Ada',
+          secondName: 'Lovelace',
+          vegetarian: true,
+          birthDate: '1990-12-10',
+          nationality: 'DE',
+          provideAddress: true,
+          address: { street: 'Main Street', streetNumber: '1', city: 'Springfield', postalCode: '12345' },
+          vegetarianOptions: { vegan: false, favoriteVegetable: 'Other', otherFavoriteVegetable: 'Okra' },
+        },
+        parameters: { schemaJson, uiSchemaJson },
+      });
+      const json = posted.result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
+      expect(json.submittedAt).toEqual(expect.any(String));
+      expect(json.address).toEqual({
+        street: 'Main Street',
+        streetNumber: '1',
+        city: 'Springfield',
+        postalCode: '12345',
+      });
+
+      // The pasted schema's own constraints are enforced server-side.
+      const invalid = await setup({
+        method: 'POST',
+        typeVersion: 2,
+        body: {
+          firstName: 'ab',
+          secondName: 'Lovelace',
+          vegetarian: true,
+          birthDate: '1990-12-10',
+          nationality: 'DE',
+          provideAddress: true,
+          address: { street: 'Main Street', streetNumber: '1', city: 'Springfield', postalCode: '12345' },
+          vegetarianOptions: { vegan: false, favoriteVegetable: 'Other', otherFavoriteVegetable: 'Okra' },
+        },
+        parameters: { schemaJson, uiSchemaJson },
+      });
+      expect(invalid.res.statusCode).toBe(400);
+      const parsed = JSON.parse(invalid.res.body) as { error: string; issues: Array<{ field: string }> };
+      expect(parsed.error).toMatch(/firstName/i);
+      expect(parsed.issues.some((issue) => issue.field === 'firstName')).toBe(true);
     });
 
     it('v2 nodes ignore the legacy importConfig param', async () => {

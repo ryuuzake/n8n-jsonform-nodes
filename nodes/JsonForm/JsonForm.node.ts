@@ -9,8 +9,8 @@ import type {
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
-import { compileForm, shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
-import type { CompiledForm, Form, Submission } from '../../src/form-definition';
+import { compileForm, shapeDocumentSubmission, shapeSubmission, SubmissionShapeError } from '../../src/form-definition';
+import type { Form, Submission } from '../../src/form-definition';
 
 import {
   buildFormFromParameters,
@@ -22,6 +22,7 @@ import {
   resolveEffectiveForm,
   resolveLegacyImportedForm,
 } from './effectiveForm';
+import type { EffectiveForm } from './effectiveForm';
 import { validateWebhookAuthentication, WebhookAuthorizationError } from './authentication';
 
 export const DEFAULT_COMPLETION_MESSAGE = 'Thank you! Your submission has been received.';
@@ -86,6 +87,32 @@ function fieldEntryValues(): INodeProperties[] {
       description:
         'Maximum number of characters accepted. Leave empty for no limit.',
       displayOptions: { show: { type: ['text', 'textarea'] } },
+    },
+    {
+      displayName: 'Min Length',
+      name: 'minLength',
+      type: 'number',
+      default: '',
+      description:
+        'Minimum number of characters required. Leave empty for no minimum.',
+      displayOptions: { show: { type: ['text', 'textarea'] } },
+    },
+    {
+      displayName: 'Visible When Field',
+      name: 'visibleWhenField',
+      type: 'string',
+      default: '',
+      description:
+        'Name of another field in this form. When set, this field is shown only while that field equals the comparison value. Leave empty to always show this field.',
+    },
+    {
+      displayName: 'Visible When Value',
+      name: 'visibleWhenValue',
+      type: 'string',
+      default: '',
+      placeholder: 'e.g. true, Other, 3',
+      description:
+        'Value the Visible When Field must equal for this field to be shown. "true" and "false" compare as booleans; numeric text compares as a number.',
     },
     {
       displayName: 'Minimum',
@@ -208,10 +235,15 @@ export async function handleJsonFormWebhook(
     const accentColor = typeof accentParameter === 'string' ? accentParameter.trim() : '';
 
     try {
-      // Builder Fields are the base; an imported document replaces them
-      // wholesale (it is never merged).
+      // Builder Fields are compiled into schema + uiSchema; a filled import
+      // is served verbatim instead (it is never merged).
+      const resolvedRequest = resolveRequestForm(context);
+      const documents =
+        resolvedRequest.kind === 'imported'
+          ? resolvedRequest.documents
+          : compileForm(resolvedRequest.form);
       const pageConfig = {
-        ...compileForm(resolveRequestForm(context)),
+        ...documents,
         completionMessage,
         // Only include Accent Color when set so the served blob stays
         // byte-identical to before for stock-themed forms.
@@ -238,7 +270,13 @@ export async function handleJsonFormWebhook(
   if (method === 'POST') {
     let submission: Submission;
     try {
-      submission = shapeSubmission(resolveRequestForm(context), context.getBodyData());
+      // Builder Forms are shaped field-by-field; imported schemas are
+      // validated with Ajv against the pasted document (defense in depth).
+      const resolvedRequest = resolveRequestForm(context);
+      submission =
+        resolvedRequest.kind === 'builder'
+          ? shapeSubmission(resolvedRequest.form, context.getBodyData())
+          : shapeDocumentSubmission(resolvedRequest.documents.schema, context.getBodyData());
     } catch (error) {
       if (error instanceof ConfigImportError) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -280,13 +318,13 @@ export async function handleJsonFormWebhook(
  * builder is untouched; otherwise the Fields built in the node UI are
  * required.
  */
-function resolveRequestForm(context: IWebhookFunctions): Form {
+function resolveRequestForm(context: IWebhookFunctions): EffectiveForm {
   if (nodeTypeVersion(context) < SPLIT_IMPORT_VERSION) {
     const importConfig = context.getNodeParameter('importConfig', '');
     if (typeof importConfig === 'string' && importConfig.trim() !== '') {
       return resolveLegacyImportedForm(importConfig);
     }
-    return builtForm(context);
+    return { kind: 'builder', form: builtForm(context) };
   }
 
   const schemaJson = context.getNodeParameter('schemaJson', '');
@@ -294,7 +332,7 @@ function resolveRequestForm(context: IWebhookFunctions): Form {
   const hasSchema = typeof schemaJson === 'string' && (schemaJson as string).trim() !== '';
   const hasUiSchema =
     typeof uiSchemaJson === 'string' && (uiSchemaJson as string).trim() !== '';
-  if (!hasSchema && !hasUiSchema) return builtForm(context);
+  if (!hasSchema && !hasUiSchema) return { kind: 'builder', form: builtForm(context) };
   // resolveEffectiveForm enforces the all-or-nothing rule for half-filled imports.
   return resolveEffectiveForm(EMPTY_BUILDER_FORM, schemaJson, uiSchemaJson);
 }
@@ -466,7 +504,7 @@ export class JsonForm implements INodeType {
         default: '',
         displayOptions: { show: { '@version': [1] } },
         description:
-          'Optional pasted { schema, uiSchema } document. When set, it is transpiled into Fields and replaces the fields defined in the builder. Constructs outside the supported subset are rejected with exact paths.',
+          'Optional pasted { schema, uiSchema } document. When set, it is served verbatim and replaces the fields defined in the builder. Structurally unsound documents are rejected with exact paths.',
       },
       {
         displayName: 'Schema JSON',
@@ -475,7 +513,7 @@ export class JsonForm implements INodeType {
         default: '',
         displayOptions: { show: { '@version': [2] } },
         description:
-          'Paste a JSON Schema object describing the form properties. Import happens only when UI Schema JSON is filled too — exactly one of the two is an error. A pasted combined { schema, uiSchema } document is rejected: paste only its inner "schema" object here.',
+          'Paste a JSON Schema object describing the form properties — served as authored, so any construct JSONForms understands (nested objects, constraints, conditionals) works. Import happens only when UI Schema JSON is filled too — exactly one of the two is an error. A pasted combined { schema, uiSchema } document is rejected: paste only its inner "schema" object here.',
       },
       {
         displayName: 'UI Schema JSON',
@@ -484,7 +522,7 @@ export class JsonForm implements INodeType {
         default: '',
         displayOptions: { show: { '@version': [2] } },
         description:
-          'Paste a JSONForms UI Schema with Control elements for the Schema JSON properties. Required alongside Schema JSON; when both are filled they replace the fields defined in the builder.',
+          'Paste a JSONForms UI Schema describing the presentation for the Schema JSON properties — layouts, rules, and options are served as authored. Required alongside Schema JSON; when both are filled they replace the fields defined in the builder.',
       },
       {
         displayName: 'Completion Message',
