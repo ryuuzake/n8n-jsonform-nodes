@@ -6,7 +6,9 @@ import {
   ConfigImportError,
   parseImportDocument,
   transpileConfig,
+  transpileForm,
 } from "../../src/form-import";
+import type { ConfigImportIssue } from "../../src/form-import";
 import type { Form } from "../../src/form-definition/types";
 
 const docWith = (
@@ -42,6 +44,45 @@ const issuesOf = (doc: unknown): Array<{ path: string; reason: string }> => {
 };
 
 const pathsOf = (doc: unknown): string[] => issuesOf(doc).map((issue) => issue.path);
+
+/** The Schema JSON half for the split-input tests below. */
+const schemaWith = (
+  properties: Record<string, unknown>,
+  overrides: { required?: string[]; title?: string; description?: string } = {},
+): unknown => ({
+  type: "object",
+  ...(overrides.title !== undefined ? { title: overrides.title } : {}),
+  ...(overrides.description !== undefined ? { description: overrides.description } : {}),
+  properties,
+  ...(overrides.required ? { required: overrides.required } : {}),
+});
+
+/** The UI Schema JSON half for the split-input tests below. */
+const uiSchemaWith = (elements: unknown[]): unknown => ({
+  type: "VerticalLayout",
+  elements,
+});
+
+/** One Control per property, in property order. */
+const defaultControls = (properties: Record<string, unknown>): unknown[] =>
+  Object.keys(properties).map((name) => ({
+    type: "Control",
+    scope: `#/properties/${name}`,
+  }));
+
+/** The issues a split transpilation rejects with, or an empty array on success. */
+const issuesOfSplit = (schema: unknown, uiSchema: unknown): ConfigImportIssue[] => {
+  try {
+    transpileForm(schema, uiSchema);
+    return [];
+  } catch (error) {
+    if (!(error instanceof ConfigImportError)) throw error;
+    return [...error.issues];
+  }
+};
+
+const pathsOfSplit = (schema: unknown, uiSchema: unknown): string[] =>
+  issuesOfSplit(schema, uiSchema).map((issue) => issue.path);
 
 describe("parseImportDocument", () => {
   it("parses a JSON document", () => {
@@ -514,5 +555,116 @@ describe("transpileConfig — invalid documents fail with useful errors", () => 
     })();
 
     expect(form).toBeUndefined();
+  });
+});
+
+describe("transpileForm — split inputs", () => {
+  it("maps split schema and uiSchema documents to the same Form the combined path produced", () => {
+    const form = transpileForm(
+      schemaWith(
+        { email: { type: "string", maxLength: 254 }, seats: { type: "number", minimum: 1 } },
+        { required: ["email"] },
+      ),
+      uiSchemaWith([
+        { type: "Control", scope: "#/properties/email", label: "Email address" },
+        { type: "Control", scope: "#/properties/seats" },
+      ]),
+    );
+
+    expect(form.fields).toEqual([
+      { name: "email", label: "Email address", type: "text", required: true, maxLength: 254 },
+      { name: "seats", label: "seats", type: "number", required: false, min: 1 },
+    ]);
+  });
+});
+
+describe("transpileForm — path rooting", () => {
+  it("roots schema-side issues at $ of the pasted Schema JSON with a Schema JSON prefix", () => {
+    expect(
+      pathsOfSplit(
+        schemaWith({ age: { type: "number", minimum: "low" } }, { required: ["age", "ghost"] }),
+        uiSchemaWith(defaultControls({ age: {} })),
+      ),
+    ).toEqual(["Schema JSON: $.age.minimum", "Schema JSON: $.required[1]"]);
+  });
+
+  it("re-roots root-schema keyword problems from $.schema.x to $.x", () => {
+    expect(
+      pathsOfSplit(
+        { properties: { name: { type: "string" } } },
+        uiSchemaWith(defaultControls({ name: {} })),
+      ),
+    ).toEqual(["Schema JSON: $.type"]);
+  });
+
+  it("roots UI-side issues at $.elements[i] of the pasted UI Schema JSON", () => {
+    expect(
+      pathsOfSplit(schemaWith({ name: { type: "string" } }), uiSchemaWith([
+        { type: "Label", text: "Hello" },
+      ]))[0],
+    ).toBe("UI Schema JSON: $.elements[0]");
+  });
+});
+
+describe("transpileForm — Combined Document rejection", () => {
+  it("rejects a full {schema, uiSchema} blob pasted as Schema JSON", () => {
+    const [issue] = issuesOfSplit(
+      docWith({ name: { type: "string" } }),
+      uiSchemaWith(defaultControls({ name: {} })),
+    );
+
+    expect(issue?.path).toBe("Schema JSON: $");
+    expect(issue?.reason).toMatch(/combined/i);
+    expect(issue?.reason).toMatch(/"schema"/);
+  });
+
+  it("rejects a full {schema, uiSchema} blob pasted as UI Schema JSON", () => {
+    const [issue] = issuesOfSplit(schemaWith({ name: { type: "string" } }), docWith({ name: { type: "string" } }));
+
+    expect(issue?.path).toBe("UI Schema JSON: $");
+    expect(issue?.reason).toMatch(/combined/i);
+    expect(issue?.reason).toMatch(/"uiSchema"/);
+  });
+
+  it("reports both rejected inputs together when both hold Combined Documents", () => {
+    expect(pathsOfSplit(docWith({ name: { type: "string" } }), docWith({ name: { type: "string" } }))).toEqual([
+      "Schema JSON: $",
+      "UI Schema JSON: $",
+    ]);
+  });
+
+  it("does not mistake a schema with a property named schema for a Combined Document", () => {
+    const form = transpileForm(
+      schemaWith({ schema: { type: "string" } }),
+      uiSchemaWith(defaultControls({ schema: {} })),
+    );
+
+    expect(form.fields).toHaveLength(1);
+  });
+});
+
+describe("transpileForm — invalid inputs fail with useful errors", () => {
+  it.each([
+    ["a string", "nope"],
+    ["null", null],
+    ["an array", []],
+    ["a number", 42],
+  ])("rejects a Schema JSON that is %s", (_label, document) => {
+    const [issue] = issuesOfSplit(document, uiSchemaWith([]));
+
+    expect(issue).toBeDefined();
+    expect(issue?.path).toBe("Schema JSON: $");
+  });
+
+  it.each([
+    ["a string", "nope"],
+    ["null", null],
+    ["an array", []],
+    ["a number", 42],
+  ])("rejects a UI Schema JSON that is %s", (_label, document) => {
+    const [issue] = issuesOfSplit(schemaWith({ name: { type: "string" } }), document);
+
+    expect(issue).toBeDefined();
+    expect(issue?.path).toBe("UI Schema JSON: $");
   });
 });

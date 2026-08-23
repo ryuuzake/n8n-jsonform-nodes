@@ -20,7 +20,7 @@ The **JSON Form** trigger node turns a webhook path into a self-contained form p
 
 Field values keep their types (numbers stay numbers, booleans stay booleans), query parameters are never included, and `submittedAt` is system-set.
 
-There are two ways to define what the form asks — **build Fields in the node UI** or **Import a JSON config**. Both produce the same internal form definition; an import replaces the builder fields wholesale when set.
+There are two ways to define what the form asks — **build Fields in the node UI** or **import standard JSONForms JSON** (Schema JSON + UI Schema JSON). Both produce the same internal form definition; a filled import replaces the builder fields wholesale.
 
 ## Install
 
@@ -79,41 +79,46 @@ Two optional texts round out the page: **Title** (heading at the top of the serv
 
 An invalid configuration fails fast with a node error naming the offending field and rule — before any page is served or submission accepted.
 
-## Importing a JSON config
+## Importing JSONForms JSON
 
-Paste a `{ schema, uiSchema }` document into **Import Config** to define the form as standard JSONForms JSON. When non-empty, the document is transpiled into fields and **replaces** whatever is built in the Fields collection (never merged). Example:
+Paste standard JSONForms JSON into the two import inputs — **Schema JSON** (the JSON Schema describing the form's properties) and **UI Schema JSON** (the UI Schema describing presentation). Import is **all-or-nothing**: it happens only when both inputs are filled; exactly one filled is an error naming the missing half, and both empty falls back to the Fields built in the node. When both are filled they are transpiled into fields and **replace** whatever is built in the Fields collection (never merged). Example:
 
 ```json
 {
-  "schema": {
-    "type": "object",
-    "title": "Event registration",
-    "description": "Reserve your seat",
-    "properties": {
-      "email": { "type": "string", "maxLength": 254 },
-      "seats": { "type": "number", "minimum": 1, "maximum": 6 },
-      "date": { "type": "string", "format": "date" },
-      "meal": { "type": "string", "enum": ["standard", "vegan"] },
-      "allergies": { "type": "array", "items": { "type": "string", "enum": ["nuts", "shellfish"] } }
-    },
-    "required": ["email"]
+  "type": "object",
+  "title": "Event registration",
+  "description": "Reserve your seat",
+  "properties": {
+    "email": { "type": "string", "maxLength": 254 },
+    "seats": { "type": "number", "minimum": 1, "maximum": 6 },
+    "date": { "type": "string", "format": "date" },
+    "meal": { "type": "string", "enum": ["standard", "vegan"] },
+    "allergies": { "type": "array", "items": { "type": "string", "enum": ["nuts", "shellfish"] } }
   },
-  "uiSchema": {
-    "type": "VerticalLayout",
-    "elements": [
-      { "type": "Control", "scope": "#/properties/email", "label": "Email address" },
-      { "type": "Control", "scope": "#/properties/seats" },
-      { "type": "Control", "scope": "#/properties/date" },
-      { "type": "Control", "scope": "#/properties/meal" },
-      { "type": "Control", "scope": "#/properties/allergies" }
-    ]
-  }
+  "required": ["email"]
 }
 ```
 
+goes into **Schema JSON**, while
+
+```json
+{
+  "type": "VerticalLayout",
+  "elements": [
+    { "type": "Control", "scope": "#/properties/email", "label": "Email address" },
+    { "type": "Control", "scope": "#/properties/seats" },
+    { "type": "Control", "scope": "#/properties/date" },
+    { "type": "Control", "scope": "#/properties/meal" },
+    { "type": "Control", "scope": "#/properties/allergies" }
+  ]
+}
+```
+
+goes into **UI Schema JSON**.
+
 Supported subset (everything else is rejected loudly, with exact paths — nothing is silently dropped):
 
-- **Root**: `type: "object"` with at least one property; root `title` / `description` become the page heading / subtext.
+- **Schema JSON root**: `type: "object"` with at least one property; root `title` / `description` become the page heading / subtext.
 - **Properties** become fields by type:
   - `string` → Text (**Long Text** via `"options": {"multi": true}` on its Control), Dropdown when it has a string `enum`, Date when `"format": "date"`
   - `string` constraints: `maxLength`; date bounds: `formatMinimum` / `formatMaximum`
@@ -124,7 +129,11 @@ Supported subset (everything else is rejected loudly, with exact paths — nothi
 - **UI Schema**: only `Control` elements bound to top-level properties (`#/properties/<name>`), each carrying an optional string `label`.
 - Not supported: nested objects, `oneOf` / `anyOf`, conditionals (`if`/`then`/`else`, `allOf`, `not`, `$ref`), `pattern` / `minLength`, exclusive bounds, type unions, UI rules, layouts other than a flat element list.
 
-If the document cannot be served (invalid JSON, unsupported constructs), GET answers with an explanatory page listing every offending path instead of a broken form; POST refuses submissions while the config is invalid.
+Rejection messages prefix every offending path with its input — e.g. `Schema JSON: $.seats.maximum` or `UI Schema JSON: $.elements[2]` — because both inputs root at `$`. A legacy combined `{ schema, uiSchema }` document pasted into either input is detected and rejected with a pointer to paste only the inner half.
+
+If an import cannot be served (invalid JSON, unsupported constructs), GET answers with an explanatory page listing every offending path instead of a broken form; POST refuses submissions while the configuration is invalid.
+
+> **Upgrading from v1:** nodes added before the split read the old single **Import Config** field and keep working unchanged (node version 1). To adopt the split inputs, replace the node in your workflow (it will be version 2) and re-paste the two halves into Schema JSON / UI Schema JSON.
 
 ## Node options reference
 
@@ -135,7 +144,9 @@ If the document cannot be served (invalid JSON, unsupported constructs), GET ans
 | **Title** | empty | Optional heading shown at the top of the served page. |
 | **Description** | empty | Optional text under the title. |
 | **Response Mode** | `When Last Node Finishes` | When the POST response is sent (see below). |
-| **Import Config** | empty | Optional `{ schema, uiSchema }` document replacing the builder fields. |
+| **Import Config** *(v1 nodes only)* | empty | Legacy combined `{ schema, uiSchema }` document replacing the builder fields. |
+| **Schema JSON** *(v2 nodes)* | empty | Pasted JSON Schema object. Import requires UI Schema JSON too (all-or-nothing). |
+| **UI Schema JSON** *(v2 nodes)* | empty | Pasted JSONForms UI Schema. Import requires Schema JSON too (all-or-nothing). |
 | **Completion Message** | `Thank you! Your submission has been received.` | Shown on the page after a successful submission. |
 | **Accent Color** | empty | Recolors the form's primary theme color (buttons, focus rings) in both light and dark mode. Leave empty for the stock shadcn theme. |
 
@@ -193,7 +204,7 @@ npm pack --dry-run   # inspect exactly what would publish
 
 - `nodes/JsonForm/` — the trigger node implementation (parameters, webhook handling, auth, import resolution)
 - `src/form-definition/` — Field/Form model, compilation to JSON Schema + UI Schema, submission shaping
-- `src/form-import/` — `{schema, uiSchema}` → Fields transpiler with loud, exact-path rejections
+- `src/form-import/` — JSONForms → Fields transpiler with loud, exact-path rejections (split inputs on v2; legacy combined document on v1)
 - `web/` — Vite + React app (JSONForms + shadcn/ui) bundled into a single HTML file by `vite-plugin-singlefile`
 
 ## License

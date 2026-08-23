@@ -1,23 +1,38 @@
 /**
- * Import seam: transpile a pasted `{schema, uiSchema}` document into Fields.
+ * Import seam: transpile pasted JSONForms documents into Fields.
+ *
+ * Two entries share one reading core:
+ * - `transpileConfig` (v1): a pasted `{schema, uiSchema}` document, kept for
+ *   nodes stored at typeVersion 1. Paths hang off the wrapper (`$.schema.x`,
+ *   `uiSchema.elements[i]`).
+ * - `transpileForm` (v2): split Schema JSON / UI Schema JSON inputs. Each
+ *   input roots at `$`; because both do, every issue path carries its source
+ *   prefix (`Schema JSON: $.x`, `UI Schema JSON: $.elements[i]`). A Combined
+ *   Document pasted into either input is rejected with a pointer to the
+ *   inner half.
  *
  * JSON Schema is an interchange format, never a second storage model — the
- * document is transformed into the same Field subset the builder produces and
- * then recompiled through the Form Definition module. Constructs outside the
- * Field subset are rejected loudly: every offending location is collected into
- * a single ConfigImportError with exact paths, never silently dropped.
+ * documents are transformed into the same Field subset the builder produces
+ * and then recompiled through the Form Definition module. Constructs outside
+ * the Field subset are rejected loudly: every offending location is collected
+ * into a single ConfigImportError with exact paths, never silently dropped.
  *
  * Path conventions (JSONPath-flavoured):
- * - `$` is the pasted document; shell problems point at `$.schema` / `$.uiSchema`.
- * - Properties are abbreviated to `$.<name>` (e.g. `$.address.city`) per the
- *   ticket examples; constraint problems hang off that path (`$.age.minimum`).
- * - UI Schema elements use `uiSchema.elements[<index>]`.
+ * - Split properties are abbreviated to `$.<name>` (e.g. `$.address.city`);
+ *   constraint problems hang off that path (`$.age.minimum`).
+ * - Split UI elements use `$.elements[<index>]`.
  */
 
 import { isIsoDate } from "../form-definition/iso-date";
 import type { Field, FieldType, Form } from "../form-definition/types";
 
 import { ConfigImportError, type ConfigImportIssue } from "./errors";
+
+/** Which pasted input an import issue roots at. */
+export type ImportSource = "Schema JSON" | "UI Schema JSON";
+
+export const SCHEMA_SOURCE: ImportSource = "Schema JSON";
+export const UI_SCHEMA_SOURCE: ImportSource = "UI Schema JSON";
 
 const NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_NAMES = new Set(["submittedAt"]);
@@ -32,6 +47,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A legacy `{schema, uiSchema}` wrapper pasted into one of the split inputs. */
+function isCombinedDocument(value: Record<string, unknown>): boolean {
+  return "schema" in value && "uiSchema" in value;
+}
+
 /** Parse the raw pasted parameter value; invalid JSON is itself an import error. */
 export function parseImportDocument(raw: string): unknown {
   try {
@@ -43,6 +63,20 @@ export function parseImportDocument(raw: string): unknown {
         reason: `document is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
       },
     ]);
+  }
+}
+
+/** Parse one split input, tagging any parse failure with the input it came from. */
+export function parseInputDocument(raw: string, source: ImportSource): unknown {
+  try {
+    return parseImportDocument(raw);
+  } catch (error) {
+    if (error instanceof ConfigImportError) {
+      throw new ConfigImportError(
+        error.issues.map((issue) => ({ ...issue, path: `${source}: ${issue.path}` })),
+      );
+    }
+    throw error;
   }
 }
 
@@ -68,10 +102,47 @@ class Transpiler {
   private formTitle: string | undefined;
   private formDescription: string | undefined;
 
-  private add(path: string, reason: string): void {
-    this.issues.push({ path, reason });
+  private constructor(private readonly split: boolean) {}
+
+  /** v1 entry: legacy `{schema, uiSchema}` wrapper with un-prefixed paths. */
+  static forLegacy(): Transpiler {
+    return new Transpiler(false);
   }
-  transpile(document: unknown): Form {
+
+  /** v2 entry: split inputs with source-prefixed `$`-rooted paths. */
+  static forSplitInputs(): Transpiler {
+    return new Transpiler(true);
+  }
+
+  private add(path: string, reason: string): void {
+    const located = this.split
+      ? `${this.side === "schema" ? SCHEMA_SOURCE : UI_SCHEMA_SOURCE}: ${path}`
+      : path;
+    this.issues.push({ path: located, reason });
+  }
+
+  /**
+   * Which input the currently-read document came from; reading is strictly
+   * phased (root schema, then UI Schema), so a single field suffices.
+   */
+  private side: "schema" | "ui" = "schema";
+
+  /** Path of a root-schema keyword: rooted at the wrapper in v1, at `$` in v2. */
+  private rootPath(keyword: string): string {
+    return this.split ? `$.${keyword}` : `$.schema.${keyword}`;
+  }
+
+  /** Path of the UI Schema elements container. */
+  private elementsPath(): string {
+    return this.split ? "$.elements" : "$.uiSchema.elements";
+  }
+
+  /** Path of one UI Schema element by index. */
+  private elementPath(index: number): string {
+    return this.split ? `$.elements[${index}]` : `uiSchema.elements[${index}]`;
+  }
+
+  transpileCombinedDocument(document: unknown): Form {
     if (!isPlainObject(document)) {
       throw new ConfigImportError([
         { path: "$", reason: "document must be a {schema, uiSchema} JSON object." },
@@ -91,6 +162,51 @@ class Transpiler {
       throw new ConfigImportError(shellIssues);
     }
 
+    return this.readAndBuild(schema, uiSchema);
+  }
+
+  transpileSplitDocuments(schemaDocument: unknown, uiSchemaDocument: unknown): Form {
+    const shellIssues: ConfigImportIssue[] = [
+      ...this.splitInputShellIssues(schemaDocument, SCHEMA_SOURCE, "schema", "must be a JSON Schema object."),
+      ...this.splitInputShellIssues(uiSchemaDocument, UI_SCHEMA_SOURCE, "uiSchema", "must be a JSONForms UI Schema object."),
+    ];
+    if (shellIssues.length > 0) throw new ConfigImportError(shellIssues);
+
+    return this.readAndBuild(
+      schemaDocument as Record<string, unknown>,
+      uiSchemaDocument as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * Shell-level problems of one split input: not an object, or a Combined
+   * Document pasted where only the inner half belongs.
+   */
+  private splitInputShellIssues(
+    document: unknown,
+    source: ImportSource,
+    innerName: string,
+    typeProblem: string,
+  ): ConfigImportIssue[] {
+    if (!isPlainObject(document)) {
+      return [{ path: `${source}: $`, reason: typeProblem }];
+    }
+    if (isCombinedDocument(document)) {
+      return [
+        {
+          path: `${source}: $`,
+          reason: `looks like a combined {schema, uiSchema} document; paste only its inner "${innerName}" object here.`,
+        },
+      ];
+    }
+    return [];
+  }
+
+  /** Read both documents into Fields; throw every issue together, or build. */
+  private readAndBuild(
+    schema: Record<string, unknown>,
+    uiSchema: Record<string, unknown>,
+  ): Form {
     this.readRootSchema(schema);
     this.readUiSchema(uiSchema);
 
@@ -99,20 +215,22 @@ class Transpiler {
   }
 
   private readRootSchema(schema: Record<string, unknown>): void {
+    this.side = "schema";
+
     if (schema.type !== "object") {
-      this.add("$.schema.type", 'the root schema must have "type": "object".');
+      this.add(this.rootPath("type"), 'the root schema must have "type": "object".');
     }
 
     const title = schema.title;
     if (title !== undefined && typeof title !== "string") {
-      this.add("$.schema.title", '"title" must be a string.');
+      this.add(this.rootPath("title"), '"title" must be a string.');
     } else if (typeof title === "string") {
       this.formTitle = title;
     }
 
     const description = schema.description;
     if (description !== undefined && typeof description !== "string") {
-      this.add("$.schema.description", '"description" must be a string.');
+      this.add(this.rootPath("description"), '"description" must be a string.');
     } else if (typeof description === "string") {
       this.formDescription = description;
     }
@@ -120,7 +238,7 @@ class Transpiler {
     for (const keyword of [...VARIANT_KEYWORDS, ...CONDITIONAL_KEYWORDS]) {
       if (keyword in schema) {
         this.add(
-          `$.schema.${keyword}`,
+          this.rootPath(keyword),
           `"${keyword}" at the root schema is not supported.`,
         );
       }
@@ -128,7 +246,7 @@ class Transpiler {
 
     const properties = schema.properties;
     if (!isPlainObject(properties) || Object.keys(properties).length === 0) {
-      this.add('$.schema.properties', 'at least one property is required under "properties".');
+      this.add(this.rootPath("properties"), 'at least one property is required under "properties".');
       return;
     }
 
@@ -149,12 +267,12 @@ class Transpiler {
     const required = schema.required;
     if (required !== undefined) {
       if (!Array.isArray(required) || required.some((entry) => typeof entry !== "string")) {
-        this.add("$.schema.required", '"required" must be an array of property names.');
+        this.add(this.rootPath("required"), '"required" must be an array of property names.');
       } else {
         for (const [index, entry] of required.entries()) {
           if (!(entry as string in properties)) {
             this.add(
-              `$.schema.required[${index}]`,
+              `${this.rootPath("required")}[${index}]`,
               `"required" references "${String(entry)}", which is not a defined property.`,
             );
           }
@@ -382,14 +500,15 @@ class Transpiler {
   }
 
   private readUiSchema(uiSchema: Record<string, unknown>): void {
+    this.side = "ui";
     const elements = uiSchema.elements;
     if (!Array.isArray(elements)) {
-      this.add("$.uiSchema.elements", '"uiSchema.elements" must be an array.');
+      this.add(this.elementsPath(), '"uiSchema.elements" must be an array.');
       return;
     }
 
     elements.forEach((element, index) => {
-      const path = `uiSchema.elements[${index}]`;
+      const path = this.elementPath(index);
       if (!isPlainObject(element)) {
         this.add(path, "must be an element object.");
         return;
@@ -478,8 +597,15 @@ function asTitle(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Transpile a parsed `{schema, uiSchema}` document into a Form. */
+/** Transpile a parsed `{schema, uiSchema}` document into a Form (v1 nodes). */
 export function transpileConfig(document: unknown): Form {
-  const transpiler = new Transpiler();
-  return transpiler.transpile(document);
+  return Transpiler.forLegacy().transpileCombinedDocument(document);
+}
+
+/**
+ * Transpile split Schema JSON / UI Schema JSON documents into a Form (v2
+ * nodes). Both inputs root at `$`; issues carry their source prefix.
+ */
+export function transpileForm(schemaDocument: unknown, uiSchemaDocument: unknown): Form {
+  return Transpiler.forSplitInputs().transpileSplitDocuments(schemaDocument, uiSchemaDocument);
 }

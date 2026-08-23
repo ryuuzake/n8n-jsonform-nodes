@@ -34,6 +34,26 @@ const nestedDoc = JSON.stringify({
   uiSchema: { type: 'VerticalLayout', elements: [] },
 });
 
+/** Schema JSON input half replacing builder Fields in the v2 tests below. */
+const importedSchemaJson = JSON.stringify({
+  type: 'object',
+  title: 'Imported form',
+  properties: {
+    email: { type: 'string', maxLength: 254 },
+    plan: { type: 'string', enum: ['free', 'pro'] },
+  },
+  required: ['email'],
+});
+
+/** UI Schema JSON input half matching importedSchemaJson. */
+const importedUiSchemaJson = JSON.stringify({
+  type: 'VerticalLayout',
+  elements: [
+    { type: 'Control', scope: '#/properties/email', label: 'Email' },
+    { type: 'Control', scope: '#/properties/plan', label: 'Plan' },
+  ],
+});
+
 /** A builder configuration mirroring the classic sample form. */
 const BUILT_FIELDS = {
   field: [
@@ -176,8 +196,25 @@ describe('JsonForm node description', () => {
     ]);
   });
 
-  it('exposes an Import Config parameter that overrides builder Fields when non-empty', () => {
-    expect(findProperty('importConfig')).toBeDefined();
+  it('exposes Import inputs split per node version', () => {
+    // v1 nodes keep the combined document; v2 nodes speak Schema JSON / UI Schema JSON.
+    expect(findProperty('importConfig')).toMatchObject({
+      displayOptions: { show: { '@version': [1] } },
+    });
+
+    expect(findProperty('schemaJson')).toMatchObject({
+      displayName: 'Schema JSON',
+      displayOptions: { show: { '@version': [2] } },
+    });
+    expect(findProperty('uiSchemaJson')).toMatchObject({
+      displayName: 'UI Schema JSON',
+      displayOptions: { show: { '@version': [2] } },
+    });
+  });
+
+  it('supports versions [1, 2] with 2 as the default for new nodes', () => {
+    expect(description.version).toEqual([1, 2]);
+    expect(description.defaultVersion).toBe(2);
   });
 
   it('resolves the POST webhook response mode from the node parameter at request time', () => {
@@ -277,6 +314,7 @@ describe('JsonForm webhook', () => {
     query?: Record<string, string>;
     headers?: Record<string, string>;
     credentials?: Record<string, unknown> | Error;
+    typeVersion?: number;
   }
 
   async function setup({
@@ -286,6 +324,7 @@ describe('JsonForm webhook', () => {
     query,
     headers = {},
     credentials = {},
+    typeVersion = 1,
   }: SetupOptions) {
     const node = new JsonForm();
     const res = fakeRes();
@@ -307,7 +346,11 @@ describe('JsonForm webhook', () => {
       getNodeParameter: vi.fn((name: string, fallback?: unknown) =>
         name in effectiveParameters ? effectiveParameters[name] : fallback,
       ),
-      getNode: vi.fn(() => ({ name: 'JSON Form', typeVersion: 1, type: 'n8n-nodes-jsonform.jsonForm' })),
+      getNode: vi.fn(() => ({
+        name: 'JSON Form',
+        typeVersion,
+        type: 'n8n-nodes-jsonform.jsonForm',
+      })),
     };
 
     const result = await node.webhook.call(context as never);
@@ -522,6 +565,134 @@ describe('JsonForm webhook', () => {
       expect(result?.noWebhookResponse).toBe(true);
       expect(res.statusCode).toBe(500);
       expect(JSON.parse(res.body).error).toContain('$.address.city');
+    });
+  });
+
+  describe('split import inputs (v2)', () => {
+    it('GET serves a form compiled from both split inputs instead of the built Fields', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { schemaJson: importedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"Imported form"');
+      expect(res.body).toContain('"required":["email"]');
+      // Built Fields are replaced, never merged.
+      expect(res.body).not.toContain('#/properties/name');
+    });
+
+    it('GET falls back to built Fields when both inputs are untouched', async () => {
+      const { res } = await setup({ method: 'GET', typeVersion: 2 });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('#/properties/name');
+    });
+
+    it('GET rejects a lone Schema JSON by naming the missing UI half', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { schemaJson: importedSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toContain('UI Schema JSON');
+      expect(res.body).toContain('all-or-nothing');
+    });
+
+    it('GET rejects a lone UI Schema JSON by naming the missing Schema half', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { uiSchemaJson: importedUiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toContain('Schema JSON');
+    });
+
+    it('GET explains a Combined Document pasted into Schema JSON', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { schemaJson: importedDoc, uiSchemaJson: importedUiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toContain('combined');
+      expect(res.body).toMatch(/inner &quot;schema&quot; object/);
+    });
+
+    it('GET prefixes rejection paths with their input', async () => {
+      const nestedSchemaJson = JSON.stringify({
+        type: 'object',
+        properties: {
+          address: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      });
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { schemaJson: nestedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toContain('Schema JSON: $.address.city');
+    });
+
+    it('POST shapes submissions against the imported Form from split inputs', async () => {
+      const { result } = await setup({
+        method: 'POST',
+        typeVersion: 2,
+        body: { email: 'ada@example.com', plan: 'pro' },
+        parameters: { schemaJson: importedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+      });
+
+      const json = result?.workflowData?.[0]?.[0]?.json as Record<string, unknown>;
+      expect(json.email).toBe('ada@example.com');
+      expect(json.plan).toBe('pro');
+    });
+
+    it('POST refuses to run against an invalid imported document', async () => {
+      const nestedSchemaJson = JSON.stringify({
+        type: 'object',
+        properties: {
+          address: { type: 'object', properties: { city: { type: 'string' } } },
+        },
+      });
+      const { res } = await setup({
+        method: 'POST',
+        typeVersion: 2,
+        body: {},
+        parameters: { schemaJson: nestedSchemaJson, uiSchemaJson: importedUiSchemaJson },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).error).toContain('Schema JSON: $.address.city');
+    });
+
+    it('v1 nodes ignore v2 params and keep reading the legacy combined document', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 1,
+        parameters: { importConfig: importedDoc, schemaJson: '{bad json' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"Imported form"');
+    });
+
+    it('v2 nodes ignore the legacy importConfig param', async () => {
+      const { res } = await setup({
+        method: 'GET',
+        typeVersion: 2,
+        parameters: { importConfig: importedDoc },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('#/properties/name');
     });
   });
 
